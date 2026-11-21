@@ -27,10 +27,11 @@ const runtime = {
 
 const komga = {
   status: vi.fn<MangaKomga['status']>(async () => ({
-    available: true, volumes: [{ number: 2, total: 2, downloaded: 1, filename: null, state: 'downloading', tasks: [
-      { id: '41', mangaId: '22', title: 'Example Manga', chapterId: '41', chapterName: '第2卷 第2话',
-        state: 'running', upstreamState: 'DOWNLOADING', percent: 61 },
-    ] }],
+    available: true, archiveMode: 'chapter', volumes: [], chapters: [
+      { id: '41', number: '2', name: '第2卷 第2话', downloaded: false, filename: null, state: 'downloading',
+        task: { id: '41', mangaId: '22', title: 'Example Manga', chapterId: '41', chapterName: '第2卷 第2话',
+          state: 'running', upstreamState: 'DOWNLOADING', percent: 61 } },
+    ],
   })),
   download: vi.fn(async () => ({ queued: ['41'], skipped: [], completed: [], filename: null })),
   downloadChapters: vi.fn(async () => ({ queued: [], skipped: ['41'], completed: [], filename: null,
@@ -111,15 +112,15 @@ describe('native manga tools', () => {
     expect(manga.setLibrary).toHaveBeenCalledWith({ mangaId: 'manga-1', inLibrary: true })
   })
 
-  it('dispatches Komga volume status and download through native DSH tools', async () => {
-    expect(await call('manga_komga_status', { mangaId: '22', volume: 2 })).toMatchObject({
-      ok: true, volumes: [{ number: 2, state: 'downloading', tasks: [{ percent: 61 }] }],
+  it('exposes per-chapter progress and instructs DSH to wait for the Docker-generated CBZ', async () => {
+    expect(await call('manga_komga_status', { mangaId: '22' })).toMatchObject({
+      ok: true, chapters: [{ id: '41', state: 'downloading', task: { percent: 61 } }],
+      notice: expect.stringContaining('每章下载后 Docker 自动生成一个 CBZ'),
     })
-    expect(komga.status).toHaveBeenCalledWith('22', 2)
-    expect(await call('manga_komga_download', { mangaId: '22', volume: 2 })).toMatchObject({
-      ok: true, queued: ['41'], filename: null,
-    })
-    expect(komga.download).toHaveBeenCalledWith('22', 2)
+    expect(komga.status).toHaveBeenCalledWith('22')
+    const schema = ctx.tools.schemas().find((entry) => entry.name === 'manga_komga_download')
+    expect(schema?.description).toContain('automatically packages each completed chapter')
+    expect(JSON.stringify(schema)).not.toContain('"volume":')
   })
 
   it('explains the difference between a chapter download and its CBZ and supports selected chapter IDs', async () => {
@@ -138,7 +139,7 @@ describe('native manga tools', () => {
     expect(archived).toMatchObject({ ok: true, summary: expect.stringContaining('确认 CBZ 1 个'),
       next: { tool: 'manga_komga_status', args: { mangaId: '22', chapterIds: ['41'] } } })
     expect(komga.downloadChapters).toHaveBeenCalledExactlyOnceWith('22', ['41'])
-    expect(await call('manga_komga_download', { mangaId: '22', chapterIds: ['41'], volume: 7 })).toMatchObject({
+    expect(await call('manga_komga_download', { mangaId: '22', chapterIds: [] })).toMatchObject({
       ok: false, error: { code: 'MANGA_ARCHIVE_SELECTION_REQUIRED' },
     })
     expect(komga.downloadChapters).toHaveBeenCalledOnce()

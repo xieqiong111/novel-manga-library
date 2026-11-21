@@ -42,7 +42,7 @@ export function createKomgaMaintenance({ settings, currentKomga, metadata, scan 
       let lastPage = 1
       for (let page = 0; page < lastPage; page += 1) {
         ensureCurrent()
-        const data = await client.series({ libraryId, page, size })
+        const data = await client.series({ libraryId, page, size, activeOnly: true })
         if (page === 0) lastPage = data.page.totalPages
         if (data.page.number !== page || data.content.some((item) => item.libraryId !== libraryId)) {
           throw new MetadataError(502, 'KOMGA_SERIES_MISMATCH', 'Komga 返回的系列与所选书库不一致。')
@@ -66,6 +66,11 @@ export function createKomgaMaintenance({ settings, currentKomga, metadata, scan 
           else if (outcome.cover?.status === 'failed') result.failed += 1
           else result.skipped += 1
         } catch (error) {
+          if (error?.code === 'KOMGA_ITEM_GONE') {
+            result.skipped += 1
+            note(title, '系列已被移除或不可访问')
+            continue
+          }
           result.failed += 1
           note(title, error?.status ? error.message : '刮削失败。')
           if (error?.code === 'MAINTENANCE_SETTINGS_CHANGED' || error?.status === 429 || !error?.status || error.status >= 500) throw error

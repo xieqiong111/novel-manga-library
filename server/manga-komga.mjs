@@ -77,7 +77,9 @@ export function createMangaKomga(client, getVolumes, archiveUrl) {
         ...result, archiveMode: catalog.archiveMode,
         chapters: chapters.map((chapter) => {
           const task = tasks.get(chapter.id) ?? null
-          return { ...chapter, task, state: progress(chapter.filename, Number(chapter.downloaded), 1, task ? [task] : [], chapter.archiveFailed) }
+          const state = !chapter.filename && chapter.legacyVolume ? 'in_legacy_volume'
+            : progress(chapter.filename, Number(chapter.downloaded), 1, task ? [task] : [], chapter.archiveFailed)
+          return { ...chapter, task, state }
         }),
         ...(chapterIds ? { missingChapterIds: chapterIds.filter((id) => !chapters.some((chapter) => chapter.id === id)) }
           : number === undefined ? {
@@ -89,21 +91,7 @@ export function createMangaKomga(client, getVolumes, archiveUrl) {
 
     async download(mangaId, number) {
       requireCatalog(mangaId, number)
-      const catalog = await load(mangaId)
-      const volume = catalog.volumes.find((entry) => entry.number === number)
-      if (!volume) {
-        const message = catalog.archiveMode === 'chapter'
-          ? '该来源按话归档。请使用章节 ID 下载，话号不能当成卷号。'
-          : '这一卷缺少明确的来源条目，或源目录已经变化。'
-        throw new SuwayomiError('VOLUME_UNAVAILABLE', message, 409)
-      }
-      if (volume.filename || volume.downloaded === volume.chapterIds.length) {
-        return emptyDownload(volume.chapterIds, volume.filename)
-      }
-      if (volume.chapterIds.length > 100) {
-        throw new SuwayomiError('VOLUME_TOO_LARGE', '该卷超过 100 话，请分批下载章节，下载齐后会自动归档。', 409)
-      }
-      return { ...(await client.download({ mangaId, chapterIds: volume.chapterIds })), filename: null }
+      throw new SuwayomiError('VOLUME_DOWNLOAD_DISABLED', '漫画下载现按章进行，请使用章节 ID。', 409)
     },
 
     async downloadChapters(mangaId, ids) {
@@ -112,13 +100,13 @@ export function createMangaKomga(client, getVolumes, archiveUrl) {
       const catalog = await load(mangaId, { chapterIds })
       if (catalog.archiveMode !== 'chapter') {
         throw new SuwayomiError('CHAPTER_ARCHIVE_UNAVAILABLE',
-          '该来源未确认按话归档。请查归档状态；按卷的作品可选卷，或在该卷内分批下载章节。', 409)
+          '这个来源未提供可单独归档的章节，请选择提供分话目录的来源。', 409)
       }
       const entries = new Map(catalog.chapters.map((chapter) => [chapter.id, chapter]))
       if (chapterIds.some((id) => !entries.has(id))) {
-        throw new SuwayomiError('CHAPTER_ARCHIVE_SELECTION_INVALID', '有章节不在这部作品的单话归档目录中，请重新核对章节 ID。', 409)
+        throw new SuwayomiError('CHAPTER_ARCHIVE_SELECTION_INVALID', '选择中含整卷或无效条目，请选实际章节。', 409)
       }
-      const requested = chapterIds.filter((id) => !entries.get(id).downloaded && !entries.get(id).filename)
+      const requested = chapterIds.filter((id) => !entries.get(id).downloaded && !entries.get(id).filename && !entries.get(id).legacyVolume)
       const skipped = chapterIds.filter((id) => !requested.includes(id))
       const archived = chapterIds.flatMap((id) => {
         const { filename } = entries.get(id)

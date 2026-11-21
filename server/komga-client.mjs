@@ -203,7 +203,7 @@ export function createKomgaClient(config = readKomgaConfig(), options = {}) {
     if (!configured) throw new KomgaError('NOT_CONFIGURED', 'Komga is not configured', 503)
   }
 
-  async function request(pathname, { method = 'GET', body, form, maxBytes = MAX_JSON_BYTES } = {}) {
+  async function request(pathname, { method = 'GET', body, form, maxBytes = MAX_JSON_BYTES, metadataLookup = false } = {}) {
     requireConfigured()
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), timeoutMs)
@@ -222,6 +222,9 @@ export function createKomgaClient(config = readKomgaConfig(), options = {}) {
         cache: 'no-store',
       })
       try {
+        if (metadataLookup && response.status === 404) {
+          throw new KomgaError('KOMGA_ITEM_GONE', 'Komga 系列或单册已不可访问。', 404)
+        }
         if (!response.ok) throw responseError(response)
         const bytes = await readLimitedBody(response, maxBytes)
         return { response, bytes }
@@ -266,17 +269,18 @@ export function createKomgaClient(config = readKomgaConfig(), options = {}) {
     }
   }
 
-  async function series({ libraryId, query = '', page = 0, size = 24 }) {
+  async function series({ libraryId, query = '', page = 0, size = 24, activeOnly = false }) {
     const id = safeId(libraryId, 'libraryId')
+    const library = { libraryId: { operator: 'is', value: id } }
     const body = {
-      condition: { libraryId: { operator: 'is', value: id } },
+      condition: activeOnly ? { allOf: [library, { deleted: { operator: 'isFalse' } }] } : library,
       ...(query ? { fullTextSearch: query } : {}),
     }
     const params = new URLSearchParams({ page: String(page), size: String(size), sort: 'metadata.titleSort,asc' })
     const payload = await requestJson(`/api/v1/series/list?${params}`, { method: 'POST', body })
     if (!payload || !Array.isArray(payload.content)) throw new KomgaError('INVALID_RESPONSE', 'Komga returned an invalid series page', 502)
     return {
-      content: payload.content.map(seriesDto),
+      content: payload.content.filter((item) => !activeOnly || item?.deleted !== true).map(seriesDto),
       page: {
         number: requiredCount(payload.number, 'page number'),
         size: requiredCount(payload.size, 'page size'),
@@ -341,9 +345,12 @@ export function createKomgaClient(config = readKomgaConfig(), options = {}) {
   }
 
   async function metadataTarget(scope, id) {
-    const item = await requestJson(metadataPath(scope, id))
+    const item = await requestJson(metadataPath(scope, id), { metadataLookup: true })
+    if (item?.id === id && item.deleted === true) {
+      throw new KomgaError('KOMGA_ITEM_GONE', 'Komga 中的系列或单册已移入回收站。', 410)
+    }
     if (!item || item.id !== id || !item.metadata || typeof item.metadata !== 'object' ||
-        typeof item.name !== 'string' || item.deleted === true) {
+        typeof item.name !== 'string') {
       throw new KomgaError('INVALID_RESPONSE', 'Komga did not return the requested active item', 502)
     }
     return {

@@ -210,9 +210,9 @@ export function createMangaApi(client, logger = { warn() {} }, { missingBffAuth 
             }
             sendJson(res, 200, await komga.status(mangaId, volume, selection))
           } else {
-            const { volume } = await readJson(req)
-            if (volume === undefined) throw new MangaApiError(400, 'INVALID_VOLUME', '请选择有效卷号。')
-            sendJson(res, 200, await komga.download(mangaId, volume))
+            const { volume, chapterIds } = await readJson(req)
+            if (volume !== undefined) throw new MangaApiError(409, 'VOLUME_DOWNLOAD_DISABLED', '漫画下载现按章进行，请使用章节 ID。')
+            sendJson(res, 200, await komga.downloadChapters(mangaId, chapterIds))
           }
           return true
         }

@@ -115,6 +115,18 @@ describe('Komga dashboard maintenance', () => {
     expect(client.scanLibrary).toHaveBeenCalledOnce()
   })
 
+  it('skips a series removed during the job, continues checking, and scans the library', async () => {
+    const { call, finish, client } = fixture()
+    const original = client.metadataTarget
+    vi.spyOn(client, 'metadataTarget').mockImplementation(async (scope, id) => {
+      if (id === 'linked') throw Object.assign(new Error('已移入回收站'), { status: 410, code: 'KOMGA_ITEM_GONE' })
+      return original(scope, id)
+    })
+    await call('POST', { libraryId })
+    expect(await finish()).toMatchObject({ checked: 4, skipped: 3, failed: 0, updated: 1, error: null, scan: { accepted: true } })
+    expect(client.series).toHaveBeenCalledWith(expect.objectContaining({ activeOnly: true }))
+  })
+
   it('stops the job when the administrator disables scraping before writing', async () => {
     const { call, finish, request, client, preferences } = fixture()
     request.mockImplementationOnce(async () => {

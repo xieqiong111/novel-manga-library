@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Export completed Suwayomi volumes or individually numbered chapters to CBZ."""
+"""Export one CBZ per completed Suwayomi manga chapter."""
 
 import argparse
 import base64
-from collections import defaultdict
 from contextlib import contextmanager
 from decimal import Decimal
 import fcntl
@@ -162,45 +161,6 @@ class Suwayomi:
         output.seek(0)
 
 
-def volume_label(name):
-    name = name.translate(DIGITS)
-    match = VOLUME.match(name)
-    if not match:
-        return None
-    volume = int(match["cjk"] or match["en"])
-    if volume < 1:
-        return None
-    rest = name[match.end():].strip()
-    if not rest:
-        return volume, None
-    marker = CHAPTER_LABEL.match(BOUNDARY.sub("", rest))
-    if marker:
-        return volume, Decimal(marker["cjk"] or marker["en"])
-    return None
-
-
-def planned_volumes(chapters):
-    groups = defaultdict(list)
-    for row in chapters:
-        label = volume_label(row["name"])
-        if label is not None:
-            number, chapter_number = label
-            groups[number].append((chapter_number, row))
-    for volume, entries in sorted(groups.items()):
-        whole = [row for number, row in entries if number is None]
-        if len(whole) > 1 or (not whole and len({number for number, _ in entries}) != len(entries)):
-            logging.warning("volume %s skipped: duplicate entries need an explicit edition", volume)
-            continue
-        # A source's whole-volume entry takes precedence over separately labelled chapters.
-        yield volume, whole or [row for _, row in sorted(entries, key=lambda entry: entry[0])]
-
-
-def complete_volumes(chapters):
-    for volume, selected in planned_volumes(chapters):
-        if all(row["isDownloaded"] is True for row in selected):
-            yield volume, selected
-
-
 def chapter_number(name):
     name = name.translate(DIGITS).strip()
     labelled = CHAPTER_LABEL.match(name)
@@ -215,16 +175,21 @@ def chapter_number(name):
 
 
 def standalone_chapters(chapters):
-    # A source with volume labels stays in volume mode to avoid duplicate Komga books.
-    if any(VOLUME.match(row["name"].translate(DIGITS)) for row in chapters):
-        return
     for row in chapters:
-        number = chapter_number(row["name"])
-        if number is not None:
-            yield number, row
+        name = row["name"].translate(DIGITS)
+        volume = VOLUME.match(name)
+        if volume:
+            number = chapter_number(BOUNDARY.sub("", name[volume.end():]))
+            if number is None:
+                continue
+        else:
+            number = chapter_number(name)
+        yield number, row
 
 
 def chapter_filename(number, chapter_id):
+    if number is None:
+        return f"章节 [{int(chapter_id)}].cbz"
     whole, dot, fraction = number.partition(".")
     return f"第{whole.zfill(3)}{dot}{fraction}话 [{int(chapter_id)}].cbz"
 
@@ -382,35 +347,49 @@ def archive_status(directories, filename, selected, failed):
     return {"filename": None, **({"archiveFailed": True} if failed else {})}
 
 
-def volume_catalog(client, root, manga_id, previous=(), *, offset=0, limit=20, chapter_ids=None, archive_errors=None):
+def legacy_volume_chapters(directories):
+    coverage = {}
+    for folder in directories:
+        for file in sorted(folder.glob("第*卷.cbz")):
+            if file.is_symlink() or not re.fullmatch(r"第[0-9]{2,4}卷\.cbz", file.name):
+                continue
+            try:
+                with ZipFile(file) as archive:
+                    saved = json.loads(archive.comment)
+                if isinstance(saved, dict) and saved.get("version") == 1 and isinstance(saved.get("chapters"), list):
+                    for row in saved["chapters"]:
+                        if isinstance(row, list) and len(row) == 2 and all(type(value) is int for value in row):
+                            coverage.setdefault(tuple(row), file.name)
+            except (BadZipFile, OSError, ValueError, UnicodeError):
+                continue
+    return coverage
+
+
+def archive_catalog(client, root, manga_id, previous=(), *, offset=0, limit=20, chapter_ids=None, archive_errors=None):
     manga = client.manga(manga_id)
     if not manga or str(manga["sourceId"]) == "0":
         return {"volumes": [], "archiveMode": "unsupported", "chapters": [], "chapterCount": 0}
     chapters = list(islice(client.manga_chapters(manga_id), CATALOG_LIMIT + 1))
     if len(chapters) > CATALOG_LIMIT:
         raise ArchiveError("chapter catalog exceeds lookup limit")
-    volumes = []
     directories = archive_directories(root, previous, manga)
-    for number, selected in planned_volumes(chapters):
-        filename = f"第{number:02}卷.cbz"
-        volumes.append({
-            "number": number,
-            "chapterIds": [str(row["id"]) for row in selected],
-            "downloaded": sum(row["isDownloaded"] is True for row in selected),
-            **archive_status(directories, filename, selected, archive_errors and (manga_id, filename) in archive_errors),
-        })
+    legacy = legacy_volume_chapters(directories)
     standalone = list(standalone_chapters(chapters))
-    mode = "volume" if volumes else "chapter" if standalone else "unsupported"
+    mode = "chapter" if standalone else "unsupported"
     selected_chapters = ([(number, row) for number, row in standalone if str(row["id"]) in chapter_ids]
                          if chapter_ids is not None else standalone[offset:offset + limit])
     results = []
     for number, row in selected_chapters:
         filename = chapter_filename(number, row["id"])
+        status = archive_status(directories, filename, [row], archive_errors and (manga_id, filename) in archive_errors)
+        old_file = legacy.get((row["id"], row["pageCount"]))
+        if not status["filename"] and old_file:
+            status = {"filename": None, "legacyVolume": old_file}
         results.append({
             "id": str(row["id"]), "name": row["name"], "number": number, "downloaded": row["isDownloaded"],
-            **archive_status(directories, filename, [row], archive_errors and (manga_id, filename) in archive_errors),
+            **status,
         })
-    return {"volumes": volumes, "archiveMode": mode, "chapters": results, "chapterCount": len(standalone)}
+    return {"volumes": [], "archiveMode": mode, "chapters": results, "chapterCount": len(standalone)}
 
 
 def catalog_selection(query):
@@ -445,7 +424,7 @@ def start_status_server(client, root, port, settings=None, archive_errors=None):
                         self.send_error(400)
                         return
                     current, previous = storage_roots(root, settings)
-                    result = volume_catalog(client, current, int(match[1]), previous, archive_errors=archive_errors, **selection)
+                    result = archive_catalog(client, current, int(match[1]), previous, archive_errors=archive_errors, **selection)
                 else:
                     self.send_error(404)
                     return
@@ -466,13 +445,6 @@ def start_status_server(client, root, port, settings=None, archive_errors=None):
     server = HTTPServer(("0.0.0.0", port), Handler)
     Thread(target=server.serve_forever, daemon=True).start()
     return server
-
-
-def archive_volume(client, root, manga, volume, chapters, previous=(), directories=None):
-    title = f"第{volume:02}卷"
-    if directories is None:
-        directories = archive_directories(root, previous, manga)
-    return write_cbz(client, root, manga, title + ".cbz", title, str(volume), chapters, directories)
 
 
 def write_cbz(client, root, manga, filename, title, number, chapters, directories):
@@ -534,19 +506,14 @@ def run_once(client, root, previous=(), archive_errors=None):
         try:
             chapters = list(client.manga_chapters(manga_id))
             directories = archive_directories(root, previous, manga)
-            for volume, selected in complete_volumes(chapters):
-                key = (manga_id, f"第{volume:02}卷.cbz")
-                try:
-                    exported += archive_volume(client, root, manga, volume, selected, directories=directories)
-                    clear_error(key)
-                except (ArchiveError, OSError, BadZipFile, RuntimeError) as exc:
-                    record_error(key)
-                    failures += 1
-                    logging.error("manga %s volume %s: %s", manga_id, volume, exc)
+            legacy = legacy_volume_chapters(directories)
             for filename, title, number, selected in chapter_archives(chapters):
+                row = selected[0]
+                if (row["id"], row["pageCount"]) in legacy:
+                    continue
                 key = (manga_id, filename)
                 try:
-                    exported += write_cbz(client, root, manga, filename, title, number, selected, directories)
+                    exported += write_cbz(client, root, manga, filename, title, number or '', selected, directories)
                     clear_error(key)
                 except (ArchiveError, OSError, BadZipFile, RuntimeError) as exc:
                     record_error(key)
@@ -612,7 +579,7 @@ def main():
                 start_status_server(client, args.output, args.status_port, args.settings_file, archive_errors)
             if args.progress_interval:
                 Thread(target=log_download_progress, args=(client, args.progress_interval), daemon=True).start()
-            logging.info("Suwayomi volume exporter started (interval: %ds)", args.interval)
+            logging.info("Suwayomi chapter exporter started (interval: %ds)", args.interval)
             while True:
                 try:
                     current, previous = storage_roots(args.output, args.settings_file)
@@ -624,7 +591,7 @@ def main():
                     return int(bool(failures))
                 time.sleep(args.interval)
     except (ArchiveError, OSError, ValueError) as exc:
-        logging.error("cannot start volume exporter: %s", exc)
+        logging.error("cannot start chapter exporter: %s", exc)
         return 1
 
 

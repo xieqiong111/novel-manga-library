@@ -31,17 +31,20 @@ const liveMangaApi = {
 
 export const mangaApi: typeof liveMangaApi = IS_LIVE ? liveMangaApi : mangaMock
 
-export interface KomgaVolume {
-  number: number
-  total: number
-  downloaded: number
+export interface KomgaChapter {
+  id: string
   filename: string | null
-  state: 'idle' | 'archived' | 'waiting_archive' | 'failed' | 'downloading' | 'queued'
-  tasks: MangaTask[]
+  legacyVolume?: string
+  state: 'idle' | 'archived' | 'waiting_archive' | 'archive_failed' | 'failed' | 'downloading' | 'queued' | 'in_legacy_volume'
+  task: MangaTask | null
 }
 
 export const mangaKomgaApi = {
-  volumes: (id: string) => apiFetch<{ available: boolean; volumes: KomgaVolume[] }>(`${mangaPath(id)}/komga`),
-  download: (id: string, volume: number) =>
-    apiFetch<DownloadResult & { filename: string | null }>(`${mangaPath(id)}/komga`, jsonPost({ volume })),
+  status: (id: string, chapterIds: string[]) => apiFetch<{
+    available: boolean
+    archiveMode?: 'chapter' | 'unsupported' | 'volume'
+    chapters?: KomgaChapter[]
+    missingChapterIds?: string[]
+  }>(`${mangaPath(id)}/komga?${new URLSearchParams({ chapterIds: chapterIds.join(',') })}`),
+  download: (id: string, chapterIds: string[]) => apiFetch<DownloadResult>(`${mangaPath(id)}/komga`, jsonPost({ chapterIds })),
 }

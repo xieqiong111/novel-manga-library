@@ -71,8 +71,12 @@ function validVolume(volume) {
 function validChapter(chapter) {
   if (!chapter || typeof chapter.id !== 'string' || !idPattern.test(chapter.id) ||
       typeof chapter.name !== 'string' || typeof chapter.downloaded !== 'boolean' ||
-      typeof chapter.number !== 'string' || !/^\d{1,4}(?:\.\d{1,4})?$/.test(chapter.number) ||
+      (chapter.number !== null && (typeof chapter.number !== 'string' || !/^\d{1,4}(?:\.\d{1,4})?$/.test(chapter.number))) ||
+      (chapter.legacyVolume !== undefined && (typeof chapter.legacyVolume !== 'string' || !/^第\d{2,4}卷\.cbz$/.test(chapter.legacyVolume))) ||
       (chapter.archiveFailed !== undefined && typeof chapter.archiveFailed !== 'boolean')) return false
+  if (chapter.number === null) {
+    return chapter.filename === null || chapter.filename === `章节 [${chapter.id}].cbz`
+  }
   const [whole, fraction] = chapter.number.split('.')
   const label = fraction === undefined ? whole.padStart(3, '0') : `${whole.padStart(3, '0')}.${fraction}`
   return chapter.filename === null || chapter.filename === `第${label}话 [${chapter.id}].cbz`

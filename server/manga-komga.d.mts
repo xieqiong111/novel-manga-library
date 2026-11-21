@@ -1,6 +1,6 @@
 import type { SuwayomiClient, SuwayomiTask } from './suwayomi-client.mjs'
 
-type MangaArchiveState = 'idle' | 'archived' | 'waiting_archive' | 'archive_failed' | 'failed' | 'downloading' | 'queued'
+type MangaArchiveState = 'idle' | 'archived' | 'waiting_archive' | 'archive_failed' | 'failed' | 'downloading' | 'queued' | 'in_legacy_volume'
 
 export interface MangaArchiveSelection {
   chapterIds?: string[]
@@ -22,10 +22,11 @@ export interface MangaArchiveStatus {
   }>
   chapters?: Array<{
     id: string
-    number: string
+    number: string | null
     name: string
     downloaded: boolean
     filename: string | null
+    legacyVolume?: string
     state: MangaArchiveState
     task: SuwayomiTask | null
   }>

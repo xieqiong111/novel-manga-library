@@ -118,16 +118,16 @@ describe('Suwayomi BFF routes', () => {
     expect(removed.json()).toMatchObject({ inLibrary: false, subscribed: false })
   })
 
-  it('queues only the source chapters in the chosen Komga volume and reads its actual archive filename', async () => {
-    const download = vi.fn(async () => ({ queued: ['31'], skipped: ['30'], completed: [], unconfirmed: [] }))
-    const getVolumes = vi.fn(async (_mangaId: string) => [
-      { number: 1, chapterIds: ['29'], downloaded: 1, filename: '第01卷.cbz' },
-      { number: 2, chapterIds: ['30', '31'], downloaded: 1, filename: null },
-    ])
-    const tasks = vi.fn(async () => ({ queue: [
-      { mangaId: '22', chapterId: '31', state: 'running', percent: 38 },
-      { mangaId: '99', chapterId: '50', state: 'running', percent: 75 },
-    ] }))
+  it('only queues eligible chapters and skips existing files and chapters already covered by an old volume', async () => {
+    const download = vi.fn(async () => ({ queued: ['31'], skipped: [], completed: [], unconfirmed: [] }))
+    const getVolumes = vi.fn(async () => ({
+      archiveMode: 'chapter', chapterCount: 3, volumes: [], chapters: [
+        { id: '29', name: '序章', number: null, downloaded: true, filename: '章节 [29].cbz' },
+        { id: '30', name: '第2卷 第1话', number: '1', downloaded: true, filename: null, legacyVolume: '第02卷.cbz' },
+        { id: '31', name: '第2卷 第2话', number: '2', downloaded: false, filename: null },
+      ],
+    }))
+    const tasks = vi.fn(async () => ({ queue: [{ mangaId: '22', chapterId: '31', state: 'running', percent: 38 }] }))
     const api = createMangaApi({ download, tasks }, undefined, { getVolumes })
     const path = '/api/manga/22/komga'
     const url = new URL(path, 'http://localhost')
@@ -136,18 +136,20 @@ describe('Suwayomi BFF routes', () => {
       await api(request(method, path, { contentType: 'application/json', body }), res, url)
       return res
     }
-    expect((await invoke('GET')).json()).toEqual({ available: true, volumes: [
-      { number: 1, total: 1, downloaded: 1, filename: '第01卷.cbz', state: 'archived', tasks: [] },
-      { number: 2, total: 2, downloaded: 1, filename: null, state: 'downloading',
-        tasks: [{ mangaId: '22', chapterId: '31', state: 'running', percent: 38 }] },
+    expect((await invoke('GET')).json()).toMatchObject({ available: true, archiveMode: 'chapter', chapters: [
+      { id: '29', filename: '章节 [29].cbz', state: 'archived' },
+      { id: '30', filename: null, legacyVolume: '第02卷.cbz', state: 'in_legacy_volume' },
+      { id: '31', filename: null, state: 'downloading', task: { percent: 38 } },
     ] })
-    expect((await invoke('POST', { volume: 3 })).status).toBe(409)
-    expect((await invoke('POST', { volume: 1 })).json().filename).toBe('第01卷.cbz')
+    expect((await invoke('POST', { volume: 2 })).status).toBe(409)
+    expect((await invoke('POST', { chapterIds: ['99'] })).status).toBe(409)
     expect(download).not.toHaveBeenCalled()
-    expect((await invoke('POST', { volume: 2, chapterIds: ['99'] })).json()).toMatchObject({ queued: ['31'], filename: null })
-    expect(download).toHaveBeenCalledExactlyOnceWith({ mangaId: '22', chapterIds: ['30', '31'] })
+    expect((await invoke('POST', { chapterIds: ['29', '30', '31'] })).json()).toMatchObject({
+      queued: ['31'], skipped: ['29', '30'], archived: [{ chapterId: '29', filename: '章节 [29].cbz' }],
+    })
+    expect(download).toHaveBeenCalledExactlyOnceWith({ mangaId: '22', chapterIds: ['31'] })
     getVolumes.mockRejectedValueOnce(new SuwayomiError('VOLUME_ARCHIVE_UNAVAILABLE', 'offline', 503))
-    expect((await invoke('POST', { volume: 2 })).status).toBe(503)
+    expect((await invoke('POST', { chapterIds: ['31'] })).status).toBe(503)
     expect(download).toHaveBeenCalledOnce()
   })
 

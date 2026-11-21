@@ -134,6 +134,20 @@ describe('Komga read-only adapter', () => {
     }
   })
 
+  it('filters deleted series for maintenance and distinguishes items removed during a metadata lookup', async () => {
+    const { fetchImpl } = makeFetch()
+    const inactive = { ...seriesFixture.content[0], deleted: true }
+    fetchImpl.mockResolvedValueOnce(Response.json({ ...seriesFixture, content: [inactive] }))
+    fetchImpl.mockResolvedValueOnce(Response.json(inactive))
+    const client = createKomgaClient({ url: 'http://komga' }, { fetchImpl: fetchImpl as never })
+    expect((await client.series({ libraryId: 'library-1', activeOnly: true })).content).toEqual([])
+    expect(JSON.parse(String(fetchImpl.mock.calls[0][1].body))).toEqual({
+      condition: { allOf: [{ libraryId: { operator: 'is', value: 'library-1' } }, { deleted: { operator: 'isFalse' } }] },
+    })
+    await expect(client.metadataTarget('series', 'series-1')).rejects.toMatchObject({ code: 'KOMGA_ITEM_GONE', status: 410 })
+    await expect(client.metadataTarget('series', 'series-missing')).rejects.toMatchObject({ code: 'KOMGA_ITEM_GONE', status: 404 })
+  })
+
   it('fails closed when required catalog or pagination fields are malformed', async () => {
     const malformed = {
       ...seriesFixture,

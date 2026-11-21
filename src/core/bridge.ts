@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { access, constants, mkdir, writeFile } from 'node:fs/promises'
+import { access, constants, mkdir, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import type { ResolvedConfig } from '../config.js'
 import type { BridgeEvent } from '../types.js'
@@ -66,7 +66,10 @@ export class DartBridge {
     // plugin-owned data dir and the log file is pinned to an absolute path.
     const writableCwd = this.config.dataDir
     const explicit = this.config.dartBinary || process.env.LN_DART_BINARY
-    if (explicit) return { command: explicit, prefix: [], label: explicit, cwd: writableCwd }
+    if (explicit) {
+      const command = await findExecutable(explicit, writableCwd)
+      return command ? { command, prefix: [], label: explicit, cwd: writableCwd } : null
+    }
     const localBuild = path.join(this.config.dartProjectDir, 'build', 'bnp_headless')
     for (const candidate of ['/opt/bnp/bnp_headless', localBuild]) {
       if (await existsExecutable(candidate)) return { command: candidate, prefix: [], label: candidate, cwd: writableCwd }
@@ -74,7 +77,8 @@ export class DartBridge {
     const headlessScript = path.join(this.config.dartProjectDir, 'bin', 'headless.dart')
     if (!(await exists(headlessScript))) return null
     const dartSdk = process.env.LN_DART_SDK
-    const dart = dartSdk ? path.join(dartSdk, 'bin', 'dart') : 'dart'
+    const dart = await findExecutable(dartSdk ? path.join(dartSdk, 'bin', 'dart') : 'dart', this.config.dartProjectDir)
+    if (!dart) return null
     return {
       command: dart,
       prefix: ['run', headlessScript],
@@ -210,5 +214,24 @@ async function exists(file: string): Promise<boolean> {
 }
 
 async function existsExecutable(file: string): Promise<boolean> {
-  try { await access(file, constants.X_OK); return true } catch { return false }
+  try {
+    await access(file, constants.X_OK)
+    return (await stat(file)).isFile()
+  } catch { return false }
+}
+
+async function findExecutable(command: string, cwd: string): Promise<string | null> {
+  const locations = command.includes('/') || command.includes('\\') || path.isAbsolute(command)
+    ? [path.resolve(cwd, command)]
+    : (process.env.PATH ?? (process.platform === 'win32' ? '' : '/usr/bin:/bin')).split(path.delimiter)
+      .map((directory) => path.resolve(cwd, directory, command))
+  for (const file of locations) {
+    if (await existsExecutable(file)) return file
+    if (process.platform === 'win32' && !path.extname(file)) {
+      for (const extension of ['.exe', '.com']) {
+        if (await existsExecutable(file + extension)) return file + extension
+      }
+    }
+  }
+  return null
 }

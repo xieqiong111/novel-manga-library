@@ -1,4 +1,3 @@
-from decimal import Decimal
 from pathlib import Path
 import tempfile
 import unittest
@@ -7,8 +6,8 @@ from xml.etree import ElementTree
 from zipfile import BadZipFile, ZipFile
 
 from archive import (
-    ArchiveError, Suwayomi, archive_volume, complete_volumes, run_once,
-    series_directory, storage_roots, volume_catalog, volume_label,
+    ArchiveError, Suwayomi, archive_catalog, archive_directories, run_once,
+    series_directory, standalone_chapters, storage_roots, write_cbz,
 )
 
 
@@ -29,25 +28,21 @@ class FakeSuwayomi:
         output.seek(0)
 
 
-class VolumeArchiveTests(unittest.TestCase):
-    def test_volumes_require_explicit_labels(self):
-        self.assertEqual(volume_label("第１２卷"), (12, None))
-        self.assertEqual(volume_label("Vol. 8 - Chapter 14.5"), (8, Decimal("14.5")))
-        self.assertIsNone(volume_label("第12话"))
-        self.assertIsNone(volume_label("画集：第1卷"))
-        self.assertIsNone(volume_label("第1卷预告"))
+def old_volume(client, root, manga, volume, chapters, previous=()):
+    title = f"第{volume:02}卷"
+    return write_cbz(client, root, manga, title + ".cbz", title, str(volume), chapters,
+                     archive_directories(root, previous, manga))
 
-    def test_incomplete_volumes_and_duplicate_chapters(self):
-        first = chapter(5, "第1卷 第1话")
-        second = chapter(6, "第1卷 第2话", downloaded=False)
-        whole = chapter(8, "第2卷")
-        unrelated = chapter(9, "第3话")
-        duplicate_a = chapter(10, "第3卷 第1话")
-        duplicate_b = chapter(11, "第3卷 第1话")
-        with self.assertLogs(level="WARNING"):
-            self.assertEqual(list(complete_volumes([unrelated, first, second, whole, duplicate_a, duplicate_b])), [(2, [whole])])
-        second["isDownloaded"] = True
-        self.assertEqual(list(complete_volumes([whole, second, first])), [(1, [first, second]), (2, [whole])])
+
+class ChapterArchiveTests(unittest.TestCase):
+    def test_chapter_selection_ignores_whole_volumes_and_accepts_mixed_labels(self):
+        whole = chapter(5, "第１２卷")
+        standalone = chapter(6, "第12话")
+        prefixed = chapter(8, "Vol. 8 - Chapter 14.5")
+        named = chapter(9, "序章")
+        self.assertEqual(list(standalone_chapters([whole, standalone, prefixed, named])), [
+            ("12", standalone), ("14.5", prefixed), (None, named),
+        ])
 
     def test_export_orders_pages_and_separates_sources(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -56,9 +51,9 @@ class VolumeArchiveTests(unittest.TestCase):
             a = {"id": 17, "sourceId": "99", "title": "試/作"}
             b = {"id": 18, "sourceId": "100", "title": "試/作"}
             chapters = [chapter(3, "第2卷 第2话"), chapter(4, "第2卷 第3话")]
-            self.assertTrue(archive_volume(client, root, a, 2, chapters))
-            self.assertFalse(archive_volume(client, root, {**a, "title": "別名"}, 2, chapters))
-            self.assertTrue(archive_volume(client, root, b, 2, chapters))
+            self.assertTrue(old_volume(client, root, a, 2, chapters))
+            self.assertFalse(old_volume(client, root, {**a, "title": "別名"}, 2, chapters))
+            self.assertTrue(old_volume(client, root, b, 2, chapters))
             self.assertEqual(client.calls, [3, 4, 3, 4])
             self.assertEqual(len(list(root.glob("*/*.cbz"))), 2)
             self.assertTrue((root / "試_作 [100-18]" / "第02卷.cbz").is_file())
@@ -82,7 +77,7 @@ class VolumeArchiveTests(unittest.TestCase):
                 chapter(6, "第１.５話 幕间"),
                 chapter(7, "第１.５話 幕间（另一版本）"),
                 chapter(8, "第2话", downloaded=False),
-                chapter(9, "预告"),
+                chapter(9, "序章"),
             ]
             with patch.object(client, "downloaded_mangas", return_value={3482: manga}, create=True), patch.object(
                 client, "manga_chapters", return_value=rows, create=True
@@ -91,9 +86,9 @@ class VolumeArchiveTests(unittest.TestCase):
                 self.assertEqual(run_once(client, selected), 0)
             series = selected / "无职转生"
             self.assertEqual(sorted(file.name for file in series.glob("*.cbz")), [
-                "第001.5话 [6].cbz", "第001.5话 [7].cbz", "第001话 [5].cbz",
+                "章节 [9].cbz", "第001.5话 [6].cbz", "第001.5话 [7].cbz", "第001话 [5].cbz",
             ])
-            self.assertEqual(client.calls, [5, 6, 7])
+            self.assertEqual(client.calls, [5, 6, 7, 9])
             with ZipFile(series / "第001.5话 [6].cbz") as archive:
                 self.assertIsNone(archive.testzip())
                 info = ElementTree.fromstring(archive.read("ComicInfo.xml"))
@@ -113,8 +108,8 @@ class VolumeArchiveTests(unittest.TestCase):
                 client, "downloaded_mangas", return_value={1: manga}, create=True
             ), patch.object(client, "manga_chapters", return_value=chapters, create=True), self.assertLogs(level="ERROR"):
                 self.assertEqual(run_once(client, root, archive_errors=errors), 1)
-                catalog = volume_catalog(client, root, 1, chapter_ids={"5", "7"}, archive_errors=errors)
-                page = volume_catalog(client, root, 1, limit=1, offset=1)
+                catalog = archive_catalog(client, root, 1, chapter_ids={"5", "7"}, archive_errors=errors)
+                page = archive_catalog(client, root, 1, limit=1, offset=1)
             self.assertEqual(catalog["archiveMode"], "chapter")
             self.assertEqual(catalog["chapterCount"], 3)
             self.assertEqual(catalog["chapters"][0]["filename"], "第001话 [5].cbz")
@@ -136,29 +131,38 @@ class VolumeArchiveTests(unittest.TestCase):
                 client, "manga_chapters", return_value=chapters, create=True
             ):
                 self.assertEqual(run_once(client, root), 0)
-            self.assertEqual(client.calls, [5])
+            self.assertEqual(client.calls, [6])
             self.assertEqual([file.name for file in unmanaged.iterdir()], ["existing.txt"])
             legacy = root / "試作 [99-17]"
-            self.assertTrue((legacy / "第01卷.cbz").is_file())
+            self.assertTrue((legacy / "第001话 [6].cbz").is_file())
             self.assertEqual(series_directory(root, {**manga, "title": "別名"}), legacy)
 
-    def test_catalog_reports_written_cbz_and_groups_missing_chapters(self):
+    def test_chapter_export_does_not_wait_for_other_chapters_or_duplicate_legacy_files(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             client = FakeSuwayomi()
             manga = {"id": 1, "sourceId": "2", "title": "樣本"}
-            one = chapter(10, "第1卷")
-            two = chapter(11, "第2卷 第5话", downloaded=False)
-            three = chapter(12, "第2卷 第6话", downloaded=False)
-            archive_volume(client, root, manga, 1, [one])
+            old = chapter(10, "第2卷 第4话")
+            pending = chapter(11, "第2卷 第5话", downloaded=False)
+            ready = chapter(12, "第2卷 第6话")
+            whole = chapter(13, "第2卷")
+            rows = [old, pending, ready, whole]
+            old_volume(client, root, manga, 2, [old])
             with patch.object(client, "manga", return_value=manga, create=True), patch.object(
-                client, "manga_chapters", return_value=[three, one, two], create=True
-            ):
-                catalog = volume_catalog(client, root, 1)
-            self.assertEqual(catalog["volumes"], [
-                {"number": 1, "chapterIds": ["10"], "downloaded": 1, "filename": "第01卷.cbz"},
-                {"number": 2, "chapterIds": ["11", "12"], "downloaded": 0, "filename": None},
+                client, "manga_chapters", return_value=rows, create=True
+            ), patch.object(client, "downloaded_mangas", return_value={1: manga}, create=True):
+                self.assertEqual(run_once(client, root), 0)
+                self.assertEqual(run_once(client, root), 0)
+                catalog = archive_catalog(client, root, 1)
+            self.assertEqual(client.calls, [10, 12])
+            self.assertEqual(catalog["volumes"], [])
+            self.assertEqual(catalog["archiveMode"], "chapter")
+            self.assertEqual([(entry["id"], entry["filename"], entry.get("legacyVolume")) for entry in catalog["chapters"]], [
+                ("10", None, "第02卷.cbz"),
+                ("11", None, None),
+                ("12", "第006话 [12].cbz", None),
             ])
+            self.assertEqual(sorted(p.name for p in (root / "樣本").glob("*.cbz")), ["第006话 [12].cbz", "第02卷.cbz"])
 
     def test_download_status_uses_upstream_numbers_and_keeps_unknown_progress(self):
         client = Suwayomi({"SUWAYOMI_URL": "http://suwayomi:4567"})
@@ -179,11 +183,11 @@ class VolumeArchiveTests(unittest.TestCase):
             manga = {"id": 1, "sourceId": "2", "title": "樣本"}
             one = chapter(10, "第1卷")
             two = chapter(11, "第2卷")
-            archive_volume(client, root, manga, 1, [one])
+            old_volume(client, root, manga, 1, [one])
             settings.write_text('{"mangaFolder":"新目录","mangaPrevious":[""]}')
             current, previous = storage_roots(root, settings)
-            self.assertFalse(archive_volume(client, current, manga, 1, [one], previous))
-            self.assertTrue(archive_volume(client, current, manga, 2, [two], previous))
+            self.assertFalse(old_volume(client, current, manga, 1, [one], previous))
+            self.assertTrue(old_volume(client, current, manga, 2, [two], previous))
             self.assertEqual(len(list(root.glob("*/*.cbz"))), 1)
             self.assertEqual(len(list(current.glob("*/*.cbz"))), 1)
             (root / "link").symlink_to(current, target_is_directory=True)
@@ -197,12 +201,12 @@ class VolumeArchiveTests(unittest.TestCase):
             client = FakeSuwayomi()
             manga = {"id": 1, "sourceId": "2", "title": "樣本"}
             old = chapter(10, "第1卷 第1话")
-            archive_volume(client, root, manga, 1, [old])
+            old_volume(client, root, manga, 1, [old])
             artifact = next(root.glob("*/*.cbz"))
             original = artifact.read_bytes()
             bad = chapter(11, "第1卷 第2话", page_count=4)
             with self.assertRaisesRegex(ArchiveError, "expected 4"):
-                archive_volume(client, root, manga, 1, [old, bad])
+                old_volume(client, root, manga, 1, [old, bad])
             self.assertEqual(artifact.read_bytes(), original)
             self.assertEqual(list(root.glob(".suwayomi-*")), [])
 
@@ -216,7 +220,7 @@ class VolumeArchiveTests(unittest.TestCase):
                 output.seek(0)
             with patch.object(client, "chapter_zip", corrupt):
                 with self.assertRaises(BadZipFile):
-                    archive_volume(client, root, manga, 1, [chapter(7, "第1卷")])
+                    old_volume(client, root, manga, 1, [chapter(7, "第1卷")])
             self.assertEqual(list(root.iterdir()), [])
 
 
