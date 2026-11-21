@@ -129,7 +129,7 @@ export async function openKomgaPostDownload({ settings, archiveHistory, logger, 
         job.phase = 'scraping'
         if (options.scrape) {
           const binding = await readMangaBangumiBinding(settings.config.downloadFoldersFile, job.mangaId)
-          const input = { libraryId: library.id, seriesId: series.id, kind: 'manga',
+          const input = { libraryId: library.id, seriesId: series.id, kind: 'manga', ...(job.mangaId ? { mangaId: job.mangaId } : {}),
             ...(binding ? { confirmedSubjectId: binding.subjectId } : {}) }
           let fallback = false
           let result

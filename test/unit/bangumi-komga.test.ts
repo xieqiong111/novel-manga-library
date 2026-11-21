@@ -69,6 +69,57 @@ function fixture() {
 }
 
 describe('BangumiKomga metadata', () => {
+  it('uses the Chinese series title and preserves a Chinese introduction when Bangumi returns Japanese', async () => {
+    const { komga, state, patchSeries } = fixture()
+    state.summaryLock = false
+    const getManga = vi.fn()
+    const run = createBangumiKomga({
+      komga: () => komga, getManga,
+      requestMetadata: async () => ({ status: 200, payload: {
+        subject, metadata: { title: 'この素晴らしい世界に祝福を！', summary: 'ゲームを愛する佐藤和真が異世界へと向かう。' },
+      } }),
+    })
+    const preview = await run('preview', seriesInput)
+    expect(preview.changes).toMatchObject({ title: { after: '测试作品' } })
+    expect(preview.changes).not.toHaveProperty('summary')
+    await run('apply', { previewId: preview.previewId })
+    expect(patchSeries).toHaveBeenCalledWith(expect.not.objectContaining({ summary: expect.anything() }))
+    expect(getManga).not.toHaveBeenCalled()
+  })
+
+  it('uses the archived manga’s Chinese source introduction and leaves Japanese-only book summaries unwritten', async () => {
+    const { komga, state, patchBook, patchSeries } = fixture()
+    state.summary = '異世界での旅が始まる。'
+    state.summaryLock = false
+    const getManga = vi.fn(async () => ({
+      source: { lang: 'zh-TW' }, description: '和真轉生到異世界，與女神展開冒險。\n\nID: 649',
+    }))
+    const run = createBangumiKomga({
+      komga: () => komga, getManga,
+      requestMetadata: async () => ({ status: 200, payload: {
+        subject, metadata: { summary: 'ゲームを愛する佐藤和真が異世界へと向かう。' },
+      } }),
+    })
+    const book = await run('preview', { ...seriesInput, scope: 'book', bookId: 'book-a' })
+    await run('apply', { previewId: book.previewId })
+    expect(patchBook).toHaveBeenCalledWith(expect.not.objectContaining({ summary: expect.anything() }))
+    await run('auto-series', { kind: 'manga', libraryId: 'library-a', seriesId: 'series-a',
+      confirmedSubjectId: 123, mangaId: '22' }, () => {})
+    expect(getManga).toHaveBeenCalledExactlyOnceWith('22')
+    expect(patchSeries).toHaveBeenCalledWith(expect.objectContaining({ summary: '和真轉生到異世界，與女神展開冒險。' }))
+  })
+
+  it('accepts a Chinese synopsis with a quoted Japanese title', async () => {
+    const { komga, state } = fixture()
+    state.summaryLock = false
+    const summary = '《このすば》讲述了少年在异世界结识伙伴的故事，他们一起踏上充满笑料的冒险旅程。'
+    const run = createBangumiKomga({ komga: () => komga, requestMetadata: async () => ({
+      status: 200, payload: { subject, metadata: { summary } },
+    }) })
+    const preview = await run('preview', seriesInput)
+    expect(preview.changes.summary.after).toBe(summary)
+  })
+
   it('accepts a confirmed source title absent from Bangumi while retaining the Bangumi folder name', async () => {
     const metadata = vi.fn(async () => ({
       subject: { id: 123, title: '正式名称', aliases: ['另一名称'] },

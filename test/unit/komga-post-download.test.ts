@@ -57,7 +57,7 @@ describe('after a manga CBZ is saved', () => {
       const restarted = (await f.open())!
       await restarted.tick(f.dependencies)
       expect(f.metadata).toHaveBeenCalledExactlyOnceWith('auto-series', {
-        libraryId: 'matching', seriesId: 'correct', kind: 'manga',
+        libraryId: 'matching', seriesId: 'correct', kind: 'manga', mangaId: '22',
       }, expect.any(Function))
       expect(restarted.status(f.last)).toMatchObject({ phase: 'done', message: 'Komga 已收录，元数据已更新。' })
       await restarted.tick(f.dependencies)

@@ -123,6 +123,7 @@ export function createApi(
     url: settings.bangumiKomgaUrl,
     requestMetadata: settings.bangumiWorker?.request,
     komga: currentKomga,
+    getManga: async (id) => mangaClient.getManga(id),
     getOptions: () => settings.integrations?.preferences?.scrapeOptions,
     getBangumiProxy: () => settings.integrations?.bangumi?.proxyUrl,
     scanAfterApply: async (client, libraryId) => settings.integrations?.preferences?.refreshMode === 'after-sync-or-scrape'

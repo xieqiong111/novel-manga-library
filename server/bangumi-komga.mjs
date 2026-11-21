@@ -82,6 +82,23 @@ function rowList(value, pair, validate = () => true) {
   })
 }
 
+function japaneseText(value) {
+  const kana = value.match(/[\p{Script=Hiragana}\p{Script=Katakana}]/gu)?.length ?? 0
+  if (!kana) return false
+  // Chinese descriptions may quote a Japanese name. Require a substantial
+  // proportion of kana to identify Japanese running text.
+  const han = value.match(/\p{Script=Han}/gu)?.length ?? 0
+  return kana / (kana + han) >= 0.25
+}
+
+const chineseText = (value) => /\p{Script=Han}/u.test(value) && !japaneseText(value)
+
+export function chineseMangaSummary(manga) {
+  if (!/^zh(?:$|[-_])/i.test(manga?.source?.lang ?? '')) return ''
+  const description = text(manga.description, 20000).replace(/\n\s*ID\s*[:：]\s*\d+\s*$/i, '').trim()
+  return chineseText(description) ? description : ''
+}
+
 function changes(current, input, scope, subject, options) {
   const patch = {}
   function field(name, value) {
@@ -93,7 +110,8 @@ function changes(current, input, scope, subject, options) {
     ? [['title', 300], ['summary', 20000], ['publisher', 300]]
     : [['summary', 20000], ['releaseDate', 10]]
   for (const [name, maximum] of scalarFields) {
-    const value = text(input[name], maximum)
+    const supplied = text(input[name], maximum)
+    const value = name === 'title' && supplied ? subject.nameCn || supplied : supplied
     if (value && (name !== 'releaseDate' || /^\d{4}-\d{2}-\d{2}$/.test(value))) field(name, value)
   }
   if (scope === 'series') {
@@ -163,7 +181,7 @@ async function applyCover(client, scope, id, url, fetchCover) {
   }
 }
 
-export function createBangumiKomga({ url, requestMetadata, komga, getOptions, getBangumiProxy, scanAfterApply, fetchImpl = fetch }) {
+export function createBangumiKomga({ url, requestMetadata, komga, getOptions, getBangumiProxy, getManga, scanAfterApply, fetchImpl = fetch }) {
   const preferences = () => getOptions?.() ?? defaultScrapeOptions
   const previews = new Map()
   const writes = new Set()
@@ -206,7 +224,7 @@ export function createBangumiKomga({ url, requestMetadata, komga, getOptions, ge
     return downloadBangumiCover(coverUrl, fetchImpl)
   }
 
-  async function preview(body, expected, connection) {
+  async function preview(body, expected, connection, archiveMangaId) {
     const type = selection(body)
     if (!komgaId(body.seriesId) || (type.scope === 'book' && !komgaId(body.bookId)) || !subjectId(body.subjectId)) {
       throw new MetadataError(400, 'INVALID_METADATA_IDS', '请填写 Komga 系列 ID、Bangumi 条目 ID，以及单册 ID（单册模式）。')
@@ -233,7 +251,18 @@ export function createBangumiKomga({ url, requestMetadata, komga, getOptions, ge
     if (subject.id !== body.subjectId || !object(data.metadata)) {
       throw new MetadataError(502, 'INVALID_METADATA_RESPONSE', 'BangumiKomga 返回的条目与请求不一致。')
     }
-    const patch = changes(target.metadata, data.metadata, type.scope, subject, options)
+    const localized = { ...data.metadata }
+    if (japaneseText(text(localized.summary, 20000))) {
+      delete localized.summary
+      if (target.metadata.summaryLock !== true && !chineseText(text(target.metadata.summary, 20000)) && archiveMangaId && getManga) {
+        localized.summary = chineseMangaSummary(await getManga(archiveMangaId).catch(() => null))
+      }
+    }
+    if (!subject.nameCn && japaneseText(text(localized.title, 300)) && chineseText(text(target.metadata.title, 300))) {
+      delete localized.title
+      if (japaneseText(text(localized.titleSort, 301))) delete localized.titleSort
+    }
+    const patch = changes(target.metadata, localized, type.scope, subject, options)
     const cover = includeCover ? await previewCover(client, type.scope, id, data) : null
     const fields = Object.keys(patch)
     const result = { ...type, ...provenance(data), id, seriesId: target.seriesId, name: target.name, subject,
@@ -332,7 +361,7 @@ export function createBangumiKomga({ url, requestMetadata, komga, getOptions, ge
     return { subject: short.length === 1 ? await subjectDetails(short[0].id) : null, candidates }
   }
 
-  async function autoSeries({ libraryId, seriesId, kind, confirmedSubjectId }, ensureCurrent, connection) {
+  async function autoSeries({ libraryId, seriesId, kind, confirmedSubjectId, mangaId }, ensureCurrent, connection) {
     const target = await komga().metadataTarget('series', seriesId)
     ensureCurrent()
     if (target.libraryId !== libraryId) throw new MetadataError(409, 'METADATA_CHANGED', '系列已移出所选书库。')
@@ -341,7 +370,8 @@ export function createBangumiKomga({ url, requestMetadata, komga, getOptions, ge
     if (hasBangumiLink(target.metadata)) return { updated: false, reason: '已有 Bangumi 关联' }
     if (target.metadata.linksLock === true) return { updated: false, reason: '关联字段已锁定' }
     if (subjectId(confirmedSubjectId)) {
-      const planned = await preview({ kind, scope: 'series', seriesId, subjectId: confirmedSubjectId }, target, connection)
+      const planned = await preview({ kind, scope: 'series', seriesId, subjectId: confirmedSubjectId }, target, connection,
+        kind === 'manga' ? mangaId : undefined)
       return planned.previewId ? apply({ previewId: planned.previewId }, ensureCurrent)
         : { updated: false, reason: '没有可写入的字段', cover: planned.cover }
     }
@@ -366,7 +396,7 @@ export function createBangumiKomga({ url, requestMetadata, komga, getOptions, ge
       return { updated: false, reason: '匹配分数低于刮削设置要求' }
     }
     ensureCurrent()
-    const planned = await preview(input, target, connection)
+    const planned = await preview(input, target, connection, input.kind === 'manga' ? mangaId : undefined)
     if (!planned.previewId) return { updated: false, reason: '没有可写入的字段', cover: planned.cover }
     return apply({ previewId: planned.previewId }, ensureCurrent)
   }
