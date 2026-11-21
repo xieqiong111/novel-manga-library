@@ -41,6 +41,10 @@ type MangaArchiveDownload = Omit<Awaited<ReturnType<SuwayomiClient['download']>>
 }
 
 export interface MangaKomga {
+  history(mangaId?: string | null, before?: number): Promise<{
+    history: Array<SuwayomiTask & { observedAt: number; archive: { state: string; file: string | null } }>
+    nextBefore: number | null
+  } | { historyError: string } | null>
   status(mangaId: string, volume?: number, selection?: MangaArchiveSelection): Promise<MangaArchiveStatus>
   download(mangaId: string, volume: number): Promise<MangaArchiveDownload>
   downloadChapters(mangaId: string, chapterIds: string[]): Promise<MangaArchiveDownload>

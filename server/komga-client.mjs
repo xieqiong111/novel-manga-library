@@ -269,7 +269,7 @@ export function createKomgaClient(config = readKomgaConfig(), options = {}) {
     }
   }
 
-  async function series({ libraryId, query = '', page = 0, size = 24, activeOnly = false }) {
+  async function series({ libraryId, query = '', page = 0, size = 24, activeOnly = false, includePaths = false }) {
     const id = safeId(libraryId, 'libraryId')
     const library = { libraryId: { operator: 'is', value: id } }
     const body = {
@@ -280,7 +280,8 @@ export function createKomgaClient(config = readKomgaConfig(), options = {}) {
     const payload = await requestJson(`/api/v1/series/list?${params}`, { method: 'POST', body })
     if (!payload || !Array.isArray(payload.content)) throw new KomgaError('INVALID_RESPONSE', 'Komga returned an invalid series page', 502)
     return {
-      content: payload.content.filter((item) => !activeOnly || item?.deleted !== true).map(seriesDto),
+      content: payload.content.filter((item) => !activeOnly || item?.deleted !== true)
+        .map((item) => ({ ...seriesDto(item), ...(includePaths ? { path: optionalText(item.url, 'series path') } : {}) })),
       page: {
         number: requiredCount(payload.number, 'page number'),
         size: requiredCount(payload.size, 'page size'),
@@ -318,7 +319,7 @@ export function createKomgaClient(config = readKomgaConfig(), options = {}) {
     return `/api/v1/${collection}/${safeId(id, 'Komga ID')}`
   }
 
-  async function metadataBooks(seriesId, page) {
+  async function metadataBooks(seriesId, page, { includePaths = false } = {}) {
     const params = new URLSearchParams({ page: String(page), size: '30', sort: 'metadata.numberSort,asc' })
     const payload = await requestJson(`/api/v1/books/list?${params}`, {
       method: 'POST', body: { condition: { allOf: [
@@ -337,6 +338,7 @@ export function createKomgaClient(config = readKomgaConfig(), options = {}) {
           name: requiredText(item.name, 'book name'),
           title: requiredText(item.metadata?.title, 'book title'),
           number: optionalText(item.metadata?.number, 'book number'),
+          ...(includePaths ? { path: optionalText(item.url, 'book path') } : {}),
         }
       }),
       page: requiredCount(payload.number, 'page number'),

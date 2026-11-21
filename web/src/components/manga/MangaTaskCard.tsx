@@ -5,6 +5,10 @@ import type { MangaTask } from '@/types/manga'
 const stateLabels: Record<MangaTask['state'], string> = {
   queued: '排队中', running: '下载中', completed: '已完成', failed: '失败', cancelled: '已取消', unknown: '状态未知',
 }
+const archiveLabels = {
+  waiting_archive: '等待打包', archived: 'CBZ 已写入', archive_failed: '打包失败',
+  legacy: '保存在旧卷包中', unsupported: '该条目无法按章归档',
+}
 
 export function MangaTaskCard({ id, task }: { id: string; task: MangaTask }) {
   const tone = task.state === 'failed' ? 'rose' : task.state === 'completed' ? 'green' : task.state === 'queued' ? 'amber' : 'violet'
@@ -19,14 +23,17 @@ export function MangaTaskCard({ id, task }: { id: string; task: MangaTask }) {
         <Badge tone={tone}>{stateLabels[task.state]}</Badge>
       </div>
       <p className="mt-1 break-words text-[11px] text-ink-soft">漫画 · {task.chapterName} · {id}</p>
-      <div className="mt-4 text-[11px] text-ink-soft">
+      {task.archive ? <div className="mt-4 space-y-1 break-words text-[11px] text-ink-soft">
+        <p>{archiveLabels[task.archive.state]}{task.archive.file && ` · ${task.archive.file}`}</p>
+        {task.followUp && <p className={task.followUp.phase === 'failed' ? 'text-negative' : undefined}>{task.followUp.message}</p>}
+      </div> : <div className="mt-4 text-[11px] text-ink-soft">
         <p className="mb-1.5 flex justify-between gap-2"><span>Suwayomi · {task.upstreamState}</span><span>{percent === null ? '未报告进度' : `${percent}%`}</span></p>
         {percent !== null && <Progress value={percent} tone={tone === 'amber' ? 'violet' : tone} className="h-1.5" />}
-      </div>
-      <div className="mt-4 flex flex-wrap items-center gap-1.5 border-t border-line pt-3">
+      </div>}
+      {!task.archive && <div className="mt-4 flex flex-wrap items-center gap-1.5 border-t border-line pt-3">
         {['暂停', '恢复', '重试', '取消'].map((label) => <Button key={label} variant="ghost" size="sm" disabled>{label}</Button>)}
         <p className="w-full text-[10.5px] text-ink-soft">本页未接入 Suwayomi 队列控制。</p>
-      </div>
+      </div>}
     </Card>
   )
 }

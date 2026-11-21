@@ -1,5 +1,6 @@
 import { SuwayomiError } from './suwayomi-client.mjs'
 import { createMangaKomga } from './manga-komga.mjs'
+import { createMangaArchiveHistory } from './manga-volume-client.mjs'
 
 const MAX_BODY = 16 * 1024
 
@@ -48,7 +49,7 @@ function queryParam(params, name, { fallback = '', maxLength = 200 } = {}) {
 }
 
 function intParam(params, name, fallback, min, max) {
-  const raw = queryParam(params, name, { fallback: String(fallback), maxLength: 12 })
+  const raw = queryParam(params, name, { fallback: String(fallback), maxLength: 15 })
   if (!/^(0|[1-9]\d*)$/.test(raw)) throw new MangaApiError(400, 'INVALID_QUERY', `${name} must be a non-negative integer`)
   const value = Number(raw)
   if (!Number.isSafeInteger(value) || value < min || value > max) {
@@ -95,7 +96,8 @@ function requiredId(value, field) {
  * Handles the browser-facing `/api/manga/*` routes. The parent router applies
  * the shared LN_BFF_TOKEN check before dispatching to this handler.
  */
-export function createMangaApi(client, logger = { warn() {} }, { missingBffAuth = false, getVolumes } = {}) {
+export function createMangaApi(client, logger = { warn() {} },
+  { missingBffAuth = false, getVolumes, archiveHistory = createMangaArchiveHistory(), postDownload } = {}) {
   const komga = createMangaKomga(client, getVolumes)
   const requestBuckets = new Map()
   function limitRequest(req, bucketName, maxRequests) {
@@ -171,8 +173,27 @@ export function createMangaApi(client, logger = { warn() {} }, { missingBffAuth 
         return true
       }
       if (method === 'GET' && segments.length === 1 && segments[0] === 'downloads') {
-        const result = await client.tasks({ action: 'list' })
-        sendJson(res, 200, result)
+        if (!archiveHistory) {
+          sendJson(res, 200, await client.tasks({ action: 'list' }))
+          return true
+        }
+        const before = params.has('before') ? intParam(params, 'before', 1, 1, 10 ** 15 - 1) : undefined
+        const limit = intParam(params, 'limit', 50, 1, 100)
+        const [upstream, archived] = await Promise.allSettled([
+          client.tasks({ action: 'list' }), archiveHistory.page({ before, limit }),
+        ])
+        if (upstream.status === 'rejected' && archived.status === 'rejected') throw upstream.reason
+        const result = upstream.status === 'fulfilled' ? upstream.value
+          : { queue: [], count: 0, queueError: 'Suwayomi 队列暂不可用。' }
+        if (archived.status === 'fulfilled') {
+          const { history, nextBefore } = archived.value
+          sendJson(res, 200, { ...result, history: history.map((task) => {
+            const followUp = task.archive.file && postDownload?.(task.archive.file)
+            return followUp ? { ...task, followUp } : task
+          }), nextBefore })
+        } else {
+          sendJson(res, 200, { ...result, historyError: '漫画完成记录暂不可用。' })
+        }
         return true
       }
       if (method === 'POST' && segments.length === 1 && segments[0] === 'downloads') {

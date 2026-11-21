@@ -1,4 +1,4 @@
-import { createMangaVolumeClient } from './manga-volume-client.mjs'
+import { createMangaArchiveHistory, createMangaVolumeClient } from './manga-volume-client.mjs'
 import { SuwayomiError } from './suwayomi-client.mjs'
 
 function progress(filename, downloaded, total, tasks, archiveFailed) {
@@ -33,6 +33,7 @@ function emptyDownload(skipped, filename = null) {
 
 export function createMangaKomga(client, getVolumes, archiveUrl) {
   if (getVolumes === undefined) getVolumes = createMangaVolumeClient(archiveUrl)
+  const archiveHistory = createMangaArchiveHistory(archiveUrl)
 
   async function load(mangaId, selection) {
     if (!getVolumes) throw new SuwayomiError('VOLUME_ARCHIVE_DISABLED', '尚未配置 Komga 归档服务。', 503)
@@ -41,6 +42,18 @@ export function createMangaKomga(client, getVolumes, archiveUrl) {
   }
 
   return {
+    async history(mangaId, before) {
+      if (mangaId) requireCatalog(mangaId)
+      if (before !== undefined && (!Number.isSafeInteger(before) || before < 1 || before >= 10 ** 15)) {
+        throw new SuwayomiError('INVALID_HISTORY_CURSOR', '请使用上一页返回的 nextBefore。', 400)
+      }
+      if (!archiveHistory) return null
+      try {
+        return await archiveHistory.page({ mangaId: mangaId ?? undefined, before })
+      } catch {
+        return { historyError: '漫画完成记录暂不可用。' }
+      }
+    },
     async status(mangaId, number, selection = {}) {
       requireCatalog(mangaId, number)
       const chapterIds = selection.chapterIds === undefined ? undefined : chapterSelection(selection.chapterIds)

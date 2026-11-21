@@ -104,7 +104,10 @@ it('scopes the DSH credential and never returns stored secrets', async () => {
     const route = '/api/settings/integrations'
     const before = await (await send('GET', route, undefined, cookie)).json()
     const defaults = { minimumScore: 0, libraries: [], sortTitle: false, addLocalVersion: false, seriesCover: false, bookCover: false }
-    expect(before.preferences).toEqual({ scrapeEnabled: false, scraperConfigured: false, refreshMode: 'after-sync', scrapeOptions: defaults })
+    expect(before.preferences).toEqual({
+      scrapeEnabled: false, scraperConfigured: false, refreshMode: 'after-sync', scrapeOptions: defaults,
+      postDownloadRefresh: false, postDownloadScrape: false,
+    })
     expect(before.bangumi).toEqual({
       managed: true, archiveAvailable: true, archiveVersion: '2026-11-17T21:04:20.000Z',
       sourceMode: 'archive', hasAccessToken: false, hasSavedAccessToken: false,
@@ -151,14 +154,15 @@ it('scopes the DSH credential and never returns stored secrets', async () => {
     ]) {
       expect((await send('POST', route, { ...preferences, scrapeOptions }, cookie)).status).toBe(400)
     }
-    const saved = await (await send('POST', route, { ...preferences, scrapeOptions: options }, cookie)).json()
+    const automatic = { postDownloadRefresh: true, postDownloadScrape: true }
+    const saved = await (await send('POST', route, { ...preferences, scrapeOptions: options, ...automatic }, cookie)).json()
     expect(saved.preferences).toEqual({
-      scrapeEnabled: true, scraperConfigured: false, refreshMode: 'manual', scrapeOptions: options,
+      scrapeEnabled: true, scraperConfigured: false, refreshMode: 'manual', scrapeOptions: options, ...automatic,
     })
     const compat = await (await send('POST', route, { ...preferences, refreshMode: 'after-sync' }, cookie)).json()
     expect(compat.preferences.scrapeOptions).toEqual(options)
     expect((await loadIntegrations(settings))?.preferences).toEqual({
-      scrapeEnabled: true, refreshMode: 'after-sync', scrapeOptions: options,
+      scrapeEnabled: true, refreshMode: 'after-sync', scrapeOptions: options, ...automatic,
     })
     const invalid = await send('POST', route, { action: 'save-komga', url: 'http://unapproved.invalid', apiKey: 'abc' }, cookie)
     expect(invalid.status).toBe(400)

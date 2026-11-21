@@ -45,6 +45,12 @@ export interface MangaTask {
   state: TaskState | 'unknown'
   upstreamState: string
   percent: number | null
+  observedAt?: number
+  archive?: {
+    state: 'waiting_archive' | 'archived' | 'archive_failed' | 'legacy' | 'unsupported'
+    file: string | null
+  }
+  followUp?: { phase: 'queued' | 'indexing' | 'scraping' | 'done' | 'skipped' | 'failed'; message: string }
 }
 
 export interface MangaHealth {

@@ -29,7 +29,10 @@ const switches = [
   ['bookCover', '使用 Bangumi 单册封面', '仅在 Komga 没有上传的单册封面时添加。'],
 ] as const
 interface ScrapingStatus {
-  preferences: { scrapeEnabled: boolean; scraperConfigured: boolean; refreshMode: RefreshMode; scrapeOptions?: ScrapeOptions }
+  preferences: {
+    scrapeEnabled: boolean; scraperConfigured: boolean; refreshMode: RefreshMode; scrapeOptions?: ScrapeOptions
+    postDownloadRefresh?: boolean; postDownloadScrape?: boolean
+  }
   bangumi: {
     managed: boolean
     archiveAvailable: boolean
@@ -73,6 +76,8 @@ function ScrapingForms({ initial }: { initial: ScrapingStatus }) {
   const [status, setStatus] = useState(initial)
   const [scrapeEnabled, setScrapeEnabled] = useState(initial.preferences.scrapeEnabled)
   const [refreshMode, setRefreshMode] = useState<RefreshMode>(initial.preferences.refreshMode)
+  const [postDownloadRefresh, setPostDownloadRefresh] = useState(Boolean(initial.preferences.postDownloadRefresh))
+  const [postDownloadScrape, setPostDownloadScrape] = useState(Boolean(initial.preferences.postDownloadScrape))
   const [options, setOptions] = useState(initial.preferences.scrapeOptions ?? defaultOptions)
   const libraries = useAsync(() => komgaApi.libraries(), [])
   const libraryChoices = new Map(libraries.data?.libraries.map(({ id, name }) => [id, name]))
@@ -88,6 +93,8 @@ function ScrapingForms({ initial }: { initial: ScrapingStatus }) {
   const [error, setError] = useState('')
   const busy = saving !== null
   const preferencesChanged = scrapeEnabled !== status.preferences.scrapeEnabled || refreshMode !== status.preferences.refreshMode ||
+    postDownloadRefresh !== Boolean(status.preferences.postDownloadRefresh) ||
+    postDownloadScrape !== Boolean(status.preferences.postDownloadScrape) ||
     JSON.stringify(options) !== JSON.stringify(status.preferences.scrapeOptions ?? defaultOptions)
   const showTokenMask = status.bangumi.hasAccessToken && !editingAccessToken
   const bangumiChanged = sourceMode !== status.bangumi.sourceMode || Boolean(accessToken.trim()) ||
@@ -119,7 +126,9 @@ function ScrapingForms({ initial }: { initial: ScrapingStatus }) {
     setError('')
     try {
       const token = accessToken.trim()
-      const body = section === 'scrape' ? { action: 'save-komga-preferences', scrapeEnabled, refreshMode, scrapeOptions: options }
+      const body = section === 'scrape' ? {
+        action: 'save-komga-preferences', scrapeEnabled, refreshMode, scrapeOptions: options, postDownloadRefresh, postDownloadScrape,
+      }
         : {
             action: 'save-bangumi-settings', sourceMode: clearAccessToken ? status.bangumi.sourceMode : sourceMode,
             ...(clearAccessToken ? { clearAccessToken: true }
@@ -173,6 +182,18 @@ function ScrapingForms({ initial }: { initial: ScrapingStatus }) {
                 刷新由 Komga 在后台执行。「同步 Komga 路径」里也可手动刷新。
               </p>
             </div>
+            <fieldset className="space-y-2 border-t border-line pt-4" disabled={busy}>
+              <legend className="pr-3 text-sm font-semibold text-ink">漫画下载完成后</legend>
+              <label className="flex items-center gap-2 text-sm text-ink">
+                <input type="checkbox" role="switch" className="h-4 w-4 accent-accent" checked={postDownloadRefresh}
+                  onChange={(event) => setPostDownloadRefresh(event.target.checked)} /> CBZ 写入后刷新 Komga 书库
+              </label>
+              <label className="flex items-center gap-2 text-sm text-ink">
+                <input type="checkbox" role="switch" className="h-4 w-4 accent-accent" checked={postDownloadScrape}
+                  onChange={(event) => setPostDownloadScrape(event.target.checked)} /> Komga 收录后自动刮削
+              </label>
+              <p className="text-xs leading-relaxed text-ink-soft">只处理新打包的漫画。自动刮削同时受刮削开关、书库范围和匹配规则控制。</p>
+            </fieldset>
             <fieldset className="space-y-4 border-t border-line pt-4" disabled={busy}>
               <legend className="pr-3 text-sm font-semibold text-ink">匹配与写入</legend>
               <div>

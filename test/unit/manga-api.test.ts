@@ -181,6 +181,28 @@ describe('Suwayomi BFF routes', () => {
     expect(invalid.status).toBe(400)
   })
 
+  it('keeps confirmed completion history visible after the live queue is empty or temporarily unavailable', async () => {
+    const tasks = vi.fn(async () => ({ queue: [], count: 0 }))
+    const entry = {
+      id: '41', chapterId: '41', mangaId: '22', title: '测试漫画', chapterName: '第1话',
+      state: 'completed', upstreamState: 'FINISHED', percent: null,
+      archive: { state: 'archived', file: '测试漫画/第001话 [41].cbz' },
+    }
+    const page = vi.fn(async () => ({ history: [entry], nextBefore: 20 }))
+    const api = createMangaApi({ tasks }, undefined, {
+      archiveHistory: { page }, postDownload: () => ({ phase: 'done', message: 'Komga 已收录。' }),
+    })
+    const url = new URL('http://localhost/api/manga/downloads?before=22&limit=1')
+    const res = responseSink()
+    await api(request('GET', url.pathname, {}), res, url)
+    expect(res.json()).toMatchObject({ queue: [], history: [{ ...entry, followUp: { phase: 'done' } }], nextBefore: 20 })
+    expect(page).toHaveBeenCalledExactlyOnceWith({ before: 22, limit: 1 })
+    tasks.mockRejectedValueOnce(new Error('down'))
+    const failedQueue = responseSink()
+    await api(request('GET', url.pathname, {}), failedQueue, url)
+    expect(failedQueue.json()).toMatchObject({ queueError: 'Suwayomi 队列暂不可用。', history: [entry] })
+  })
+
   it('rate-limits searches per client IP and returns Retry-After', async () => {
     const client = { searchManga: vi.fn(async () => ({ mangas: [], hasNextPage: false, errors: [] })) }
     const api = createApi({ suwayomi: client }, { token: '', corsOrigin: '', allowDelete: false }, logger as never, client as never)

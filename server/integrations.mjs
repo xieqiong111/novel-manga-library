@@ -92,6 +92,8 @@ export async function loadIntegrations(settings) {
   })
   const preferences = () => ({
     scrapeEnabled: saved.preferences?.scrapeEnabled ?? scraperConfigured,
+    postDownloadRefresh: saved.preferences?.postDownloadRefresh === true,
+    postDownloadScrape: saved.preferences?.postDownloadScrape === true,
     refreshMode: refreshModes.includes(saved.preferences?.refreshMode)
       ? saved.preferences.refreshMode : defaultKomgaRefreshMode,
     scrapeOptions: parseScrapeOptions(saved.preferences?.scrapeOptions) ?? defaultScrapeOptions,
@@ -115,6 +117,7 @@ export async function loadIntegrations(settings) {
     get client() { return client },
     get preferences() { return preferences() },
     get bangumi() { return bangumi() },
+    get bangumiArchiveAvailable() { return archiveAvailable },
     authorizeDsh(req) {
       const key = /^Bearer (studio_dsh_[A-Za-z0-9_-]{43})$/i.exec(String(req.headers.authorization ?? ''))?.[1]
       return Boolean(key && /^[a-f0-9]{64}$/.test(saved.dsh?.digest ?? '')
@@ -139,7 +142,10 @@ export async function loadIntegrations(settings) {
         return true
       }
       try {
-        const { action, url: address, apiKey, scrapeEnabled, refreshMode, scrapeOptions, sourceMode, accessToken, clearAccessToken, proxyUrl } = await readBody(req)
+        const {
+          action, url: address, apiKey, scrapeEnabled, refreshMode, scrapeOptions, sourceMode, accessToken,
+          clearAccessToken, proxyUrl, postDownloadRefresh, postDownloadScrape,
+        } = await readBody(req)
         if (action === 'save-komga') {
           let target
           try { target = normalizeKomgaUrl(address) } catch { /* invalid URL */ }
@@ -167,7 +173,8 @@ export async function loadIntegrations(settings) {
           })
           sendJson(res, 200, status())
         } else if (action === 'save-komga-preferences') {
-          if (typeof scrapeEnabled !== 'boolean' || !refreshModes.includes(refreshMode)) {
+          if (typeof scrapeEnabled !== 'boolean' || !refreshModes.includes(refreshMode) ||
+              [postDownloadRefresh, postDownloadScrape].some((flag) => flag !== undefined && typeof flag !== 'boolean')) {
             sendError(res, 400, 'INVALID_KOMGA_PREFERENCES', '请选择有效的刮削开关和书库刷新方式。')
             return true
           }
@@ -180,6 +187,8 @@ export async function loadIntegrations(settings) {
           await update(async () => {
             const next = { ...saved, preferences: {
               scrapeEnabled, refreshMode, scrapeOptions: options ?? preferences().scrapeOptions,
+              postDownloadRefresh: postDownloadRefresh ?? preferences().postDownloadRefresh,
+              postDownloadScrape: postDownloadScrape ?? preferences().postDownloadScrape,
             } }
             await atomicWriteJson(file, next)
             saved = next

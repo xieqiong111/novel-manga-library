@@ -171,11 +171,11 @@ export function createBangumiKomga({ url, requestMetadata, komga, getOptions, ge
   const writes = new Set()
   let active = 0
 
-  async function adapter(operation, parameters) {
+  async function adapter(operation, parameters, connection) {
     try {
       let status, data
       if (requestMetadata) {
-        const reply = await requestMetadata(operation, parameters)
+        const reply = connection ? await requestMetadata(operation, parameters, connection) : await requestMetadata(operation, parameters)
         status = reply.status
         data = reply.payload
       } else {
@@ -208,7 +208,7 @@ export function createBangumiKomga({ url, requestMetadata, komga, getOptions, ge
     return downloadBangumiCover(coverUrl, fetchImpl)
   }
 
-  async function preview(body, expected) {
+  async function preview(body, expected, connection) {
     const type = selection(body)
     if (!komgaId(body.seriesId) || (type.scope === 'book' && !komgaId(body.bookId)) || !subjectId(body.subjectId)) {
       throw new MetadataError(400, 'INVALID_METADATA_IDS', '请填写 Komga 系列 ID、Bangumi 条目 ID，以及单册 ID（单册模式）。')
@@ -230,7 +230,7 @@ export function createBangumiKomga({ url, requestMetadata, komga, getOptions, ge
         sortTitle: options.sortTitle, addLocalVersion: options.addLocalVersion, localName: text(target.name, 300),
       } : {}),
       ...(includeCover ? { includeCover } : {}),
-    })
+    }, connection)
     const subject = candidate(data?.subject)
     if (subject.id !== body.subjectId || !object(data.metadata)) {
       throw new MetadataError(502, 'INVALID_METADATA_RESPONSE', 'BangumiKomga 返回的条目与请求不一致。')
@@ -291,34 +291,34 @@ export function createBangumiKomga({ url, requestMetadata, komga, getOptions, ge
     }
   }
 
-  async function search(body, minimumScore = preferences().minimumScore) {
+  async function search(body, minimumScore = preferences().minimumScore, connection) {
     const query = text(body.query, 201)
     if (!query || query.length > 200) throw new MetadataError(400, 'INVALID_QUERY', '请输入 1 至 200 个字符。')
     const type = selection(body)
-    const data = await adapter('search', { ...type, query })
+    const data = await adapter('search', { ...type, query }, connection)
     if (!Array.isArray(data?.candidates)) throw new MetadataError(502, 'INVALID_METADATA_RESPONSE', 'BangumiKomga 返回了无效的搜索结果。')
     const candidates = data.candidates.slice(0, 10).map(candidate)
       .filter((row) => minimumScore === 0 || (row.score >= minimumScore && row.score <= 100))
     return { ...type, ...provenance(data), candidates }
   }
 
-  async function autoSeries({ libraryId, seriesId }, ensureCurrent) {
+  async function autoSeries({ libraryId, seriesId, kind }, ensureCurrent, connection) {
     const target = await komga().metadataTarget('series', seriesId)
     ensureCurrent()
     if (target.libraryId !== libraryId) throw new MetadataError(409, 'METADATA_CHANGED', '系列已移出所选书库。')
     const { libraries, minimumScore } = preferences()
-    checkLibrary(libraryId, libraries)
+    checkLibrary(libraryId, libraries, kind)
     if (hasBangumiLink(target.metadata)) return { updated: false, reason: '已有 Bangumi 关联' }
     if (target.metadata.linksLock === true) return { updated: false, reason: '关联字段已锁定' }
     const query = String(target.metadata.title || target.name).trim()
     if (!query || query.length > 200) return { updated: false, reason: '系列标题无法用于匹配' }
     const key = titleKey(query)
     const rule = libraries.find((entry) => entry.id === libraryId)
-    const kinds = rule && rule.kind !== 'all' ? [rule.kind] : ['novel', 'manga']
+    const kinds = kind ? [kind] : rule && rule.kind !== 'all' ? [rule.kind] : ['novel', 'manga']
     const matches = new Map()
     for (const kind of kinds) {
       const type = { kind, scope: 'series' }
-      const { candidates } = await search({ ...type, query }, 0)
+      const { candidates } = await search({ ...type, query }, 0, connection)
       for (const row of candidates) {
         if ([row.name, row.nameCn].some((name) => name && titleKey(name) === key)) {
           matches.set(row.id, { input: { ...type, seriesId, subjectId: row.id }, score: row.score })
@@ -331,12 +331,12 @@ export function createBangumiKomga({ url, requestMetadata, komga, getOptions, ge
       return { updated: false, reason: '匹配分数低于刮削设置要求' }
     }
     ensureCurrent()
-    const planned = await preview(input, target)
+    const planned = await preview(input, target, connection)
     if (!planned.previewId) return { updated: false, reason: '没有可写入的字段', cover: planned.cover }
     return apply({ previewId: planned.previewId }, ensureCurrent)
   }
 
-  return async function run(action, body, ensureCurrent) {
+  return async function run(action, body, ensureCurrent, connection) {
     if (!url && !requestMetadata) throw new MetadataError(503, 'BANGUMIKOMGA_UNCONFIGURED', '尚未启用 BangumiKomga 服务。')
     if (active >= 4) throw new MetadataError(429, 'METADATA_BUSY', '元数据服务繁忙，请稍后重试。')
     active += 1
@@ -356,7 +356,7 @@ export function createBangumiKomga({ url, requestMetadata, komga, getOptions, ge
       }
       if (action === 'apply') return await apply(body)
       if (action === 'preview') return await preview(body)
-      if (action === 'auto-series') return await autoSeries(body, ensureCurrent)
+      if (action === 'auto-series') return await autoSeries(body, ensureCurrent, connection)
       return await search(body)
     } finally {
       active -= 1

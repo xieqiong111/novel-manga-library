@@ -6,7 +6,7 @@ from xml.etree import ElementTree
 from zipfile import BadZipFile, ZipFile
 
 from archive import (
-    ArchiveError, Suwayomi, archive_catalog, archive_directories, run_once,
+    ArchiveError, DownloadHistory, Suwayomi, archive_catalog, archive_directories, run_once,
     series_directory, standalone_chapters, storage_roots, write_cbz,
 )
 
@@ -35,6 +35,30 @@ def old_volume(client, root, manga, volume, chapters, previous=()):
 
 
 class ChapterArchiveTests(unittest.TestCase):
+    def test_completed_history_survives_restart_and_emits_only_new_exports(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manga = {"id": 17, "sourceId": "99", "title": "样本"}
+            first, second = chapter(3, "第1话"), chapter(4, "第2话")
+            client = FakeSuwayomi()
+            # Confirm an existing CBZ first to exercise import without a follow-up event.
+            write_cbz(client, root, manga, "第001话 [3].cbz", first["name"], "1", [first],
+                      archive_directories(root, [], manga))
+            history = DownloadHistory(root)
+            with patch.object(client, "downloaded_mangas", return_value={17: manga}, create=True), patch.object(
+                client, "manga_chapters", return_value=[first, second], create=True
+            ):
+                self.assertEqual(run_once(client, root, history=history), 0)
+                self.assertEqual(run_once(client, root, history=history), 0)
+            reopened = DownloadHistory(root)
+            page = reopened.page(None, 1, "17")
+            self.assertEqual([row["chapterId"] for row in page["history"]], ["4"])
+            earlier = reopened.page(page["nextBefore"], 1, "17")
+            self.assertEqual([row["chapterId"] for row in earlier["history"]], ["3"])
+            self.assertEqual(reopened.events(0), {"events": [
+                {"seq": 1, "mangaId": "17", "file": "样本/第002话 [4].cbz"},
+            ]})
+
     def test_chapter_selection_ignores_whole_volumes_and_accepts_mixed_labels(self):
         whole = chapter(5, "第１２卷")
         standalone = chapter(6, "第12话")

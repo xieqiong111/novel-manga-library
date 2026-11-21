@@ -3,7 +3,7 @@
 
 import argparse
 import base64
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from decimal import Decimal
 import fcntl
 import json
@@ -15,6 +15,7 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import shutil
+import sqlite3
 import tempfile
 import time
 from threading import Thread
@@ -48,6 +49,65 @@ ARCHIVE_LIMIT = 2 * 1024**3
 
 class ArchiveError(Exception):
     pass
+
+
+class DownloadHistory:
+    def __init__(self, root):
+        self.root = root
+        self.file = root / ".studio-download-history.sqlite3"
+        if self.file.is_symlink():
+            raise ArchiveError("invalid download history database")
+        with closing(self.connect()) as db:
+            db.executescript("""
+                CREATE TABLE IF NOT EXISTS completed (
+                    seq INTEGER PRIMARY KEY AUTOINCREMENT, chapterId TEXT NOT NULL UNIQUE,
+                    mangaId TEXT NOT NULL, title TEXT NOT NULL, chapterName TEXT NOT NULL,
+                    observedAt INTEGER NOT NULL, archiveState TEXT NOT NULL, file TEXT
+                );
+                CREATE INDEX IF NOT EXISTS completed_manga ON completed(mangaId, seq);
+                CREATE TABLE IF NOT EXISTS exports (
+                    seq INTEGER PRIMARY KEY AUTOINCREMENT, mangaId TEXT NOT NULL, file TEXT NOT NULL
+                );
+            """)
+        self.file.chmod(0o600)
+
+    def connect(self):
+        db = sqlite3.connect(self.file, timeout=3)
+        db.row_factory = sqlite3.Row
+        return db
+
+    def remember(self, manga, chapter, state, file=None, written=False):
+        chapter_id, manga_id = str(chapter["id"]), str(manga["id"])
+        relative = file.relative_to(self.root).as_posix() if file else None
+        with closing(self.connect()) as db, db:
+            previous = db.execute(
+                "SELECT title,chapterName,archiveState,file FROM completed WHERE chapterId = ?", (chapter_id,)
+            ).fetchone()
+            fields = (manga["title"], chapter["name"], state, relative)
+            if previous and tuple(previous) == fields and not written:
+                return
+            db.execute("""
+                INSERT INTO completed(chapterId,mangaId,title,chapterName,observedAt,archiveState,file)
+                VALUES(?,?,?,?,?,?,?) ON CONFLICT(chapterId) DO UPDATE SET
+                  title=excluded.title, chapterName=excluded.chapterName, archiveState=excluded.archiveState, file=excluded.file
+            """, (chapter_id, manga_id, manga["title"], chapter["name"], int(time.time()*1000), state, relative))
+            # Existing CBZs imported into history do not trigger an unsolicited bulk scrape.
+            if state == "archived" and (written or (previous and previous["archiveState"] in ("waiting_archive", "archive_failed"))):
+                db.execute("INSERT INTO exports(mangaId,file) VALUES(?,?)", (manga_id, relative))
+
+    def page(self, before, limit, manga_id):
+        with closing(self.connect()) as db:
+            rows = db.execute("""
+                SELECT * FROM completed WHERE (? IS NULL OR seq < ?) AND (? IS NULL OR mangaId = ?)
+                ORDER BY seq DESC LIMIT ?
+            """, (before, before, manga_id, manga_id, limit+1)).fetchall()
+        return {"history": [dict(row) for row in rows[:limit]],
+                "nextBefore": rows[limit-1]["seq"] if len(rows) > limit else None}
+
+    def events(self, after):
+        with closing(self.connect()) as db:
+            rows = db.execute("SELECT * FROM exports WHERE seq > ? ORDER BY seq LIMIT 100", (after,)).fetchall()
+        return {"events": [dict(row) for row in rows]}
 
 
 class RejectRedirects(HTTPRedirectHandler):
@@ -405,7 +465,15 @@ def catalog_selection(query):
     return {"chapter_ids": set(ids) if ids is not None else None, "offset": offset, "limit": limit}
 
 
-def start_status_server(client, root, port, settings=None, archive_errors=None):
+def history_query(query, *fields):
+    values = parse_qs(query, keep_blank_values=True, strict_parsing=True, max_num_fields=len(fields))
+    if any(key not in fields or len(items) != 1 or not re.fullmatch(r"0|[1-9][0-9]{0,14}", items[0])
+           for key, items in values.items()):
+        raise ValueError("invalid history pagination")
+    return {key: int(items[0]) for key, items in values.items()}
+
+
+def start_status_server(client, root, port, settings=None, archive_errors=None, history=None):
     class Handler(BaseHTTPRequestHandler):
         def setup(self):
             self.request.settimeout(5)
@@ -417,6 +485,22 @@ def start_status_server(client, root, port, settings=None, archive_errors=None):
             try:
                 if self.path == "/downloads":
                     result = client.download_status()
+                elif history and url.path in ("/history", "/archive-events"):
+                    try:
+                        if url.path == "/history":
+                            params = history_query(url.query, "before", "limit", "mangaId")
+                            limit = params.get("limit", 50)
+                            if not 1 <= limit <= 100:
+                                raise ValueError("invalid history page size")
+                            before = params.get("before")
+                            manga_id = str(params["mangaId"]) if "mangaId" in params else None
+                            result = history.page(before, limit, manga_id)
+                        else:
+                            params = history_query(url.query, "after")
+                            result = history.events(params.get("after", 0))
+                    except ValueError:
+                        self.send_error(400)
+                        return
                 elif match and int(match[1]) <= 2**31 - 1:
                     try:
                         selection = catalog_selection(url.query)
@@ -436,7 +520,7 @@ def start_status_server(client, root, port, settings=None, archive_errors=None):
                 self.wfile.write(body)
             except (BrokenPipeError, ConnectionResetError):
                 return
-            except (ArchiveError, OSError, ValueError, TypeError, KeyError):
+            except (ArchiveError, OSError, ValueError, TypeError, KeyError, sqlite3.Error):
                 self.send_error(503)
 
         def log_message(self, *_args):
@@ -488,7 +572,7 @@ def write_cbz(client, root, manga, filename, title, number, chapters, directorie
     return True
 
 
-def run_once(client, root, previous=(), archive_errors=None):
+def run_once(client, root, previous=(), archive_errors=None, history=None):
     def record_error(key):
         if archive_errors is not None:
             if len(archive_errors) >= CATALOG_LIMIT:
@@ -503,23 +587,46 @@ def run_once(client, root, previous=(), archive_errors=None):
     failures = 0
     exported = 0
     for manga_id, manga in mangas.items():
+        completed = []
         try:
             chapters = list(client.manga_chapters(manga_id))
+            completed = [row for row in chapters if row["isDownloaded"]]
             directories = archive_directories(root, previous, manga)
             legacy = legacy_volume_chapters(directories)
+            if history:
+                eligible = {row["id"] for _, row in standalone_chapters(completed)}
+                for row in completed:
+                    if row["id"] not in eligible:
+                        filename = legacy.get((row["id"], row["pageCount"]))
+                        history.remember(manga, row, "legacy" if filename else "unsupported",
+                                         archive_path(directories, filename) if filename else None)
             for filename, title, number, selected in chapter_archives(chapters):
                 row = selected[0]
-                if (row["id"], row["pageCount"]) in legacy:
+                old_file = legacy.get((row["id"], row["pageCount"]))
+                if old_file:
+                    if history:
+                        history.remember(manga, row, "legacy", archive_path(directories, old_file))
                     continue
                 key = (manga_id, filename)
                 try:
-                    exported += write_cbz(client, root, manga, filename, title, number or '', selected, directories)
+                    destination = archive_path(directories, filename)
+                    if history and not destination.exists():
+                        history.remember(manga, row, "waiting_archive")
+                    written = write_cbz(client, root, manga, filename, title, number or '', selected, directories)
+                    exported += written
+                    if history:
+                        history.remember(manga, row, "archived", destination, written)
                     clear_error(key)
                 except (ArchiveError, OSError, BadZipFile, RuntimeError) as exc:
                     record_error(key)
+                    if history:
+                        history.remember(manga, row, "archive_failed")
                     failures += 1
                     logging.error("manga %s chapter %s: %s", manga_id, selected[0]["id"], exc)
         except (ArchiveError, KeyError, TypeError, ValueError) as exc:
+            if history:
+                for row in completed:
+                    history.remember(manga, row, "archive_failed")
             failures += 1
             logging.error("manga %s: %s", manga_id, exc)
     logging.log(logging.INFO if exported or failures else logging.DEBUG,
@@ -575,22 +682,23 @@ def main():
             for stale in args.output.glob(".suwayomi-*.tmp"):
                 stale.unlink()
             archive_errors = {}
+            history = DownloadHistory(args.output)
             if args.status_port:
-                start_status_server(client, args.output, args.status_port, args.settings_file, archive_errors)
+                start_status_server(client, args.output, args.status_port, args.settings_file, archive_errors, history)
             if args.progress_interval:
                 Thread(target=log_download_progress, args=(client, args.progress_interval), daemon=True).start()
             logging.info("Suwayomi chapter exporter started (interval: %ds)", args.interval)
             while True:
                 try:
                     current, previous = storage_roots(args.output, args.settings_file)
-                    failures = run_once(client, current, previous, archive_errors)
-                except (ArchiveError, OSError, ValueError, TypeError, KeyError) as exc:
+                    failures = run_once(client, current, previous, archive_errors, history)
+                except (ArchiveError, OSError, ValueError, TypeError, KeyError, sqlite3.Error) as exc:
                     logging.error("export scan failed: %s", exc)
                     failures = 1
                 if not args.interval:
                     return int(bool(failures))
                 time.sleep(args.interval)
-    except (ArchiveError, OSError, ValueError) as exc:
+    except (ArchiveError, OSError, ValueError, sqlite3.Error) as exc:
         logging.error("cannot start chapter exporter: %s", exc)
         return 1
 

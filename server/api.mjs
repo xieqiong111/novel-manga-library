@@ -116,6 +116,8 @@ export function createApi(
 ) {
   const handleMangaApi = createMangaApi(mangaClient, logger, {
     missingBffAuth: settings.mangaCredentialsConfigured && !settings.token && !settings.auth,
+    archiveHistory: settings.archiveHistory,
+    postDownload: settings.postDownload?.status,
   })
   const currentKomga = () => settings.integrations?.client ?? komgaClient
   const scan = createKomgaScanner()
@@ -130,6 +132,7 @@ export function createApi(
       : { accepted: false, skipped: true, message: '已跳过自动刷新。' },
   })
   const handleKomgaMaintenance = createKomgaMaintenance({ settings, currentKomga, metadata, scan })
+  settings.postDownload?.start({ currentKomga, metadata, scan })
   const handleDownloadFolders = createDownloadFoldersApi(settings, currentKomga, scan)
   const handleKomgaApi = createKomgaApi({
     status: () => currentKomga().status(),

@@ -28,6 +28,8 @@ import { stat } from 'node:fs/promises'
 import http from 'node:http'
 import path from 'node:path'
 import { createApi } from './api.mjs'
+import { openKomgaPostDownload } from './komga-post-download.mjs'
+import { createMangaArchiveHistory } from './manga-volume-client.mjs'
 import { createSuwayomiClient } from './suwayomi-client.mjs'
 import { createKomgaClient } from './komga-client.mjs'
 import { startBangumiWorker } from './bangumi-worker.mjs'
@@ -132,6 +134,12 @@ if (settings.accountAuth) {
 }
 settings.integrations = await loadIntegrations(settings)
 settings.bangumiWorker = await startBangumiWorker(settings, logger)
+settings.archiveHistory = createMangaArchiveHistory()
+try {
+  settings.postDownload = await openKomgaPostDownload({ settings, archiveHistory: settings.archiveHistory, logger })
+} catch {
+  logger.warn('komga', 'download_follow_up_state_unavailable')
+}
 const handleApi = createApi(runtime, settings, logger, mangaClient, komgaClient)
 
 const server = http.createServer((req, res) => {
@@ -175,6 +183,7 @@ async function shutdown(signal) {
   logger.info('webapi', 'shutdown', { signal })
   server.close()
   settings.bangumiWorker?.stop()
+  await settings.postDownload?.stop()
   await runtime.dispose()
   settings.auth?.close()
   process.exit(0)

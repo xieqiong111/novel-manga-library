@@ -59,7 +59,7 @@ export function TasksPage() {
 
   const tasks: UnifiedDownloadTask[] = [
     ...(type === 'manga' ? [] : novels.map((task): UnifiedDownloadTask => ({ type: 'novel', id: `novel:${task.id}`, task }))),
-    ...mangaTasks.queue.map((task): UnifiedDownloadTask => ({ type: 'manga', id: `manga:${task.id}`, task })),
+    ...[...mangaTasks.queue, ...mangaTasks.history].map((task): UnifiedDownloadTask => ({ type: 'manga', id: `manga:${task.id}`, task })),
   ]
   const filtered = tab === 'all' ? tasks : tasks.filter(({ task }) => task.state === tab)
   const runningCount = tasks.filter(({ task }) => task.state === 'running').length
@@ -117,6 +117,7 @@ export function TasksPage() {
 
       <MediaFilterTabs />
       {mangaTasks.error && <div className="mb-4"><MangaNotice message={`漫画下载队列不可用 · ${mangaTasks.error}`} /></div>}
+      {mangaTasks.historyError && <div className="mb-4"><MangaNotice message={mangaTasks.historyError} /></div>}
       {mangaTasks.loading && <p role="status" className="mb-3 text-xs text-ink-soft"><Spinner /> 正在读取漫画队列…</p>}
 
       <div role="group" aria-label="任务状态" className="mb-5 flex flex-wrap items-center gap-2">
@@ -257,11 +258,14 @@ export function TasksPage() {
         </div>
       )}
 
+      {mangaTasks.hasOlder && ['all', 'completed'].includes(tab) && <div className="mt-4 text-center">
+        <Button size="sm" loading={mangaTasks.loadingHistory} onClick={() => void mangaTasks.loadMore()}>加载更多漫画完成记录</Button>
+      </div>}
       <div className="mt-5 flex items-start gap-2 rounded-[12px] border border-accent-line bg-accent-soft px-4 py-3 text-[10.5px] leading-relaxed text-ink-soft">
         <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-accent" />
         <span>
           {IS_LIVE
-            ? '轻小说支持取消和重试。漫画列表显示 Suwayomi 当前队列，下载完成的章节可在作品详情页查看。'
+            ? '漫画任务会保留已完成的章节及 CBZ 保存记录。归档与 Komga 收录状态分别显示。'
             : '演示操作只修改当前页面会话中的样例状态。'}
         </span>
       </div>

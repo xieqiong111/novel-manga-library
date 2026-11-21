@@ -14,15 +14,18 @@ async function readCatalog(response) {
   return JSON.parse(Buffer.concat(chunks).toString('utf8'))
 }
 
-export function createMangaVolumeClient(value = process.env.LN_VOLUME_ARCHIVE_URL) {
-  if (!value) return null
-  let origin
+function archiveOrigin(value) {
   try {
     const url = new URL(value)
-    if (['http:', 'https:'].includes(url.protocol) && url.href === `${url.origin}/`) origin = url.origin
-  } catch {
-    // Keep the other manga and novel routes available on invalid configuration.
-  }
+    if (['http:', 'https:'].includes(url.protocol) && url.href === `${url.origin}/`) return url.origin
+  } catch { /* Invalid configuration remains isolated from Suwayomi. */ }
+  return null
+}
+
+const archiveRequest = { redirect: 'error' }
+export function createMangaVolumeClient(value = process.env.LN_VOLUME_ARCHIVE_URL) {
+  if (!value) return null
+  const origin = archiveOrigin(value)
   return async function getVolumes(mangaId, selection = {}) {
     try {
       if (!origin || !idPattern.test(mangaId)) throw new Error('Invalid endpoint')
@@ -30,7 +33,7 @@ export function createMangaVolumeClient(value = process.env.LN_VOLUME_ARCHIVE_UR
       if (selection.chapterIds?.length) url.searchParams.set('chapterIds', selection.chapterIds.join(','))
       if (selection.offset !== undefined) url.searchParams.set('offset', String(selection.offset))
       if (selection.limit !== undefined) url.searchParams.set('limit', String(selection.limit))
-      const init = { redirect: 'error', signal: AbortSignal.timeout(12000) }
+      const init = { ...archiveRequest, signal: AbortSignal.timeout(12000) }
       let response = await fetch(url, init)
       if (response.status === 404 && url.search) {
         await response.body?.cancel()
@@ -56,6 +59,52 @@ export function createMangaVolumeClient(value = process.env.LN_VOLUME_ARCHIVE_UR
     } catch {
       throw new SuwayomiError('VOLUME_ARCHIVE_UNAVAILABLE', 'Komga 归档服务暂不可用。', 503)
     }
+  }
+}
+
+const archiveStates = ['waiting_archive', 'archived', 'archive_failed', 'legacy', 'unsupported']
+const validSequence = (n) => Number.isSafeInteger(n) && n > 0 && n < 10 ** 15
+export const validArchiveFile = (file) => typeof file === 'string' && file.length <= 512 &&
+  file.endsWith('.cbz') && file.includes('/') && file.split('/').every((part) =>
+    part && !part.startsWith('.') && !/[\\:\x00-\x1f\x7f]/.test(part))
+
+export function createMangaArchiveHistory(value = process.env.LN_VOLUME_ARCHIVE_URL) {
+  if (!value) return null
+  const origin = archiveOrigin(value)
+  async function read(pathname, params) {
+    if (!origin) throw Error('Invalid archive endpoint')
+    const url = new URL(pathname, origin)
+    for (const [key, value] of Object.entries(params)) if (value !== undefined) url.searchParams.set(key, String(value))
+    const response = await fetch(url, { ...archiveRequest, signal: AbortSignal.timeout(8000) })
+    if (!response.ok) {
+      await response.body?.cancel()
+      throw Error('Archive history request failed')
+    }
+    return readCatalog(response)
+  }
+  return {
+    async page({ before, limit = 50, mangaId } = {}) {
+      const { history, nextBefore } = await read('/history', { before, limit, mangaId })
+      if (!Array.isArray(history) || history.length > limit || !(nextBefore === null || validSequence(nextBefore)) ||
+          history.some((row) => !validSequence(row?.seq) || !idPattern.test(row.chapterId) || !idPattern.test(row.mangaId) ||
+            (mangaId !== undefined && row.mangaId !== mangaId) || typeof row.title !== 'string' || typeof row.chapterName !== 'string' ||
+            !Number.isSafeInteger(row.observedAt) || row.observedAt <= 0 || !archiveStates.includes(row.archiveState) ||
+            (['archived', 'legacy'].includes(row.archiveState) ? !validArchiveFile(row.file) : row.file !== null))) {
+        throw Error('Invalid archive history')
+      }
+      return { history: history.map((row) => ({
+        id: row.chapterId, chapterId: row.chapterId, mangaId: row.mangaId, title: row.title, chapterName: row.chapterName,
+        state: 'completed', upstreamState: 'FINISHED', percent: null, observedAt: row.observedAt,
+        archive: { state: row.archiveState, file: row.file },
+      })), nextBefore }
+    },
+    async events(after) {
+      const { events } = await read('/archive-events', { after })
+      if (!Array.isArray(events) || events.length > 100 || events.some((row, index) =>
+        !validSequence(row?.seq) || row.seq <= (index > 0 ? events[index - 1].seq : after) ||
+        !idPattern.test(row.mangaId) || !validArchiveFile(row.file))) throw Error('Invalid archive events')
+      return events
+    },
   }
 }
 

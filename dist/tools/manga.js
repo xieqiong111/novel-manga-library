@@ -287,12 +287,14 @@ export function registerMangaTools(ctx, runtime, komga = runtime.mangaKomga) {
     ctx.tools.register(defineTool({
         name: 'manga_tasks',
         description: [
-            'Inspect the Suwayomi download queue or cancel queued chapters.',
+            'Inspect the Suwayomi download queue and the completed chapter history, or cancel queued chapters.',
             'Actions are status (default), list, and cancel. Cancel requires chapterIds from the queue.',
+            'Completed history includes the confirmed archive state and relative CBZ path. Pass nextBefore as before for older records.',
         ].join(' '),
         parameters: {
             action: { type: 'string', description: 'status (default), list, or cancel.' },
             mangaId: { type: 'string', description: 'Optional media ID to filter displayed queue entries.' },
+            before: { type: 'number', description: 'Optional nextBefore cursor for older completed chapters.' },
             chapterIds: { type: 'array', items: { type: 'string' }, description: 'Chapter ids to dequeue; required for cancel.' },
         },
         output: jsonOutput(),
@@ -309,7 +311,11 @@ export function registerMangaTools(ctx, runtime, komga = runtime.mangaKomga) {
                 const result = await client(runtime).tasks({ action: action, chapterIds });
                 const mangaId = requiredId(args.mangaId);
                 const queue = mangaId ? result.queue.filter((task) => task.mangaId === mangaId) : result.queue;
-                return ok({ ...result, queue, count: queue.length, notice: queueNotice(queue, action === 'cancel') });
+                const history = action !== 'cancel' ? await komga.history?.(mangaId, args.before) : null;
+                const combined = history && 'history' in history && history.history.length > 0
+                    ? `本页完成记录 ${history.history.length} 章。请按实际归档状态报告文件。`
+                    : queueNotice(queue, action === 'cancel');
+                return ok({ ...result, ...history, queue, count: queue.length, notice: combined });
             });
         },
     }));

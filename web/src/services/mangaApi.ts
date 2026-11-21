@@ -6,6 +6,13 @@ type MangaPage = { mangas: Manga[]; hasNextPage: boolean }
 type ChapterPage = { chapters: MangaChapter[]; hasNextPage: boolean }
 type SearchResult = MangaPage & { nextOffset?: number | null; resultId?: string | null; truncated?: boolean; errors?: { sourceId: string; message: string }[] }
 type DownloadResult = { queued: string[]; skipped: string[]; completed?: string[]; unconfirmed?: string[] }
+type MangaTaskPage = {
+  queue: MangaTask[]
+  history?: MangaTask[]
+  nextBefore?: number | null
+  queueError?: string
+  historyError?: string
+}
 
 const mangaPath = (id: string) => `/manga/${encodeURIComponent(id)}`
 const jsonPost = (body?: object): RequestInit => ({ method: 'POST', body: JSON.stringify(body ?? {}) })
@@ -25,7 +32,9 @@ const liveMangaApi = {
   library: (offset: number) => apiFetch<MangaPage>(`/manga/library?offset=${offset}`),
   setLibrary: (id: string, inLibrary: boolean) => apiFetch<Manga>(`${mangaPath(id)}/library`, jsonPost({ inLibrary })),
   subscribe: (id: string, subscribed: boolean) => apiFetch<Manga>(`${mangaPath(id)}/subscribe`, jsonPost({ subscribed })),
-  tasks: () => apiFetch<{ queue: MangaTask[] }>('/manga/downloads'),
+  tasks: (before?: number): Promise<MangaTaskPage> => apiFetch(
+    before === undefined ? '/manga/downloads' : `/manga/downloads?before=${before}`,
+  ),
   download: (mangaId: string, chapterIds: string[]) => apiFetch<DownloadResult>('/manga/downloads', jsonPost({ mangaId, chapterIds })),
 }
 
