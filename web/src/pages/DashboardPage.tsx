@@ -14,6 +14,7 @@ import {
   Sparkles,
 } from 'lucide-react'
 import { Badge, Card, Progress, SectionTitle } from '@/components/common/ui'
+import { KomgaDashboardCard } from '@/components/komga/KomgaDashboardCard'
 import { CoverArt } from '@/components/novel/CoverArt'
 import { HeroArt } from '@/components/novel/HeroArt'
 import { NovelCard } from '@/components/novel/NovelCard'
@@ -26,8 +27,8 @@ import { cn } from '@/services/utils'
 const features = [
   {
     to: '/search',
-    title: '探索轻小说',
-    subtitle: '关键词、作者、多书源',
+    title: '走进 ACG',
+    subtitle: '搜索轻小说与漫画',
     icon: Search,
     tile: 'bg-accent-soft text-accent',
   },
@@ -97,7 +98,7 @@ export function DashboardPage() {
             <span className="text-gradient">找到下一次心动。</span>
           </h1>
           <p className="mt-2 text-[12.5px] text-ink-soft">
-            基于 DeepSeek Harness · 探索轻小说、管理 EPUB、跟踪下载进度
+            基于 DeepSeek Harness · 搜索轻小说与漫画、管理书库、跟踪下载进度
           </p>
 
           <div className="mt-4 flex w-full max-w-[600px] items-center gap-2 rounded-full bg-surface p-1.5 pl-5 shadow-[0_14px_34px_-22px_rgba(72,52,150,0.55)] ring-1 ring-accent-line">
@@ -117,7 +118,7 @@ export function DashboardPage() {
               onClick={() => search()}
               className="flex h-[44px] shrink-0 items-center gap-1.5 rounded-full bg-[linear-gradient(95deg,#8B6BF0,#7E5EE9_55%,#6C4AD9)] px-6 text-[12.5px] font-semibold text-white shadow-[0_10px_22px_-12px_rgba(108,74,217,0.9)] transition hover:brightness-105 active:scale-[0.98]"
             >
-              探索书籍
+              走进 ACG
               <ArrowRight className="h-3.5 w-3.5" />
             </button>
           </div>
@@ -166,6 +167,7 @@ export function DashboardPage() {
 
       <div className="mt-[32px] grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_310px]">
         <div className="space-y-[20px]">
+          <KomgaDashboardCard />
           {/* 为你精选（Live 模式只展示已正式入库的 EPUB） */}
           <Card data-testid="featured" className="p-0">
             <div className="flex items-center justify-between px-6 pb-4 pt-4">

@@ -2,13 +2,11 @@ import { useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import { BookOpen, RefreshCw, Search } from 'lucide-react'
 import { useSearchParams } from 'react-router-dom'
-import { ApiCover } from '@/components/common/ApiCover'
 import { PageHeader } from '@/components/common/PageHeader'
 import { Badge, Button, Card, EmptyState, Spinner } from '@/components/common/ui'
-import { CoverArt } from '@/components/novel/CoverArt'
+import { KomgaSeriesCard } from '@/components/komga/KomgaSeriesCard'
 import { useAsync } from '@/hooks/useAsync'
-import { komgaApi, komgaCoverPath } from '@/services/komgaApi'
-import type { KomgaSeries } from '@/services/komgaApi'
+import { komgaApi } from '@/services/komgaApi'
 import { DEMO, IS_LIVE } from '@/services/runtime'
 
 export function KomgaLibraryPage({ providerTabs }: { providerTabs: ReactNode }) {
@@ -90,7 +88,6 @@ export function KomgaLibraryPage({ providerTabs }: { providerTabs: ReactNode }) 
     </div>
   )
 }
-
 function KomgaSeriesGrid({ libraryId, query }: { libraryId: string; query: string }) {
   const [page, setPage] = useState(0)
   const [attempt, setAttempt] = useState(0)
@@ -123,21 +120,5 @@ function KomgaSeriesGrid({ libraryId, query }: { libraryId: string; query: strin
         </nav>
       )}
     </section>
-  )
-}
-
-function KomgaSeriesCard({ series }: { series: KomgaSeries }) {
-  const coverClass = 'aspect-[3/4] w-full rounded-[11px]'
-  return (
-    <Card className="min-w-0 overflow-hidden p-[6px]" hoverable data-komga-series={series.id}>
-      {IS_LIVE ? <ApiCover path={komgaCoverPath(series.id)} title={series.title} className={coverClass} />
-        : series.mockCover && <CoverArt theme={series.mockCover} index={0} title={series.title} media="manga" className={coverClass} />}
-      <div className="space-y-1.5 px-2 pb-2 pt-3">
-        <h3 className="break-words text-[13px] font-bold text-ink">{series.title}</h3>
-        <p className="text-xs text-ink-soft">{series.booksCount} 本 · 已读 {series.booksReadCount}</p>
-        {series.summary && <p className="line-clamp-2 break-words text-[11px] leading-relaxed text-ink-soft">{series.summary}</p>}
-
-      </div>
-    </Card>
   )
 }

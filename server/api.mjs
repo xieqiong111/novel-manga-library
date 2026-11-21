@@ -18,6 +18,7 @@ import { isDshReadRoute } from './integrations.mjs'
 import { createKomgaApi } from './komga-api.mjs'
 import { createBangumiKomga } from './bangumi-komga.mjs'
 import { createKomgaScanner } from './komga-scan.mjs'
+import { createKomgaMaintenance } from './komga-maintenance.mjs'
 import { rank, resolveBook } from '../dist/search.js'
 import { assertSafePublicUrl } from '../dist/util/paths.js'
 import {
@@ -128,6 +129,7 @@ export function createApi(
       ? await scan(client, libraryId)
       : { accepted: false, skipped: true, message: '已跳过自动刷新。' },
   })
+  const handleKomgaMaintenance = createKomgaMaintenance({ settings, currentKomga, metadata, scan })
   const handleDownloadFolders = createDownloadFoldersApi(settings, currentKomga, scan)
   const handleKomgaApi = createKomgaApi({
     status: () => currentKomga().status(),
@@ -357,6 +359,7 @@ export function createApi(
     if (settings.integrations && await settings.integrations.handle(req, res, url, { sendJson, sendError, readBody })) return true
     if (await handleDownloadFolders(req, res, url)) return true
     if (await handleMangaApi(req, res, url)) return true
+    if (await handleKomgaMaintenance(req, res, url, { sendJson, sendError, readBody })) return true
     if (await handleKomgaApi(req, res, url)) return true
 
     const segments = url.pathname
