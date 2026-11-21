@@ -1,11 +1,14 @@
 """Run BangumiKomga metadata conversion for the Studio backend over stdio."""
 
+import base64
 import json
 import os
+import re
 import string
 import sys
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 # Keep the upstream log handler off the JSON response stream.
 reply_stream = sys.stdout
@@ -25,6 +28,8 @@ from tools.resort_search_results_list import compute_name_score_by_fuzzy
 
 PLATFORMS = {"novel": SubjectPlatform.Novel, "manga": SubjectPlatform.Comic}
 MAX_RESPONSE = 2 * 1024 * 1024
+MAX_COVER = 5 * 1024 * 1024
+COVER_MIMES = {"image/jpeg", "image/png", "image/webp"}
 USER_AGENT = "NovelAndMangaStudio/1.0 (https://github.com/xieqiong111/novel-manga-library)"
 
 
@@ -35,12 +40,31 @@ class ApiError(Exception):
         self.code = code
 
 
+def bangumi_session(proxy_url):
+    session = requests.Session()
+    session.trust_env = False
+    session.headers["User-Agent"] = USER_AGENT
+    if proxy_url:
+        session.proxies["https"] = proxy_url
+    return session
+
+
+def read_bytes(response, limit):
+    data = bytearray()
+    for chunk in response.iter_content(chunk_size=16384):
+        data.extend(chunk)
+        if len(data) > limit:
+            raise ApiError(502, "BANGUMI_RESPONSE_TOO_LARGE", "Bangumi 响应超出大小限制。")
+    return data
+
+
 class Bangumi:
     provenance = {"source": "bangumi-live"}
 
-    def __init__(self, access_token=""):
-        self.session = requests.Session()
-        self.session.headers.update({"User-Agent": USER_AGENT, "Accept": "application/json"})
+    def __init__(self, access_token="", proxy_url=""):
+        self.proxy_url = proxy_url
+        self.session = bangumi_session(proxy_url)
+        self.session.headers["Accept"] = "application/json"
         token = access_token.strip()
         if token:
             self.session.headers["Authorization"] = f"Bearer {token}"
@@ -62,12 +86,41 @@ class Bangumi:
                 raise ApiError(429, "BANGUMI_RATE_LIMIT", "Bangumi 请求过于频繁，请稍后重试。")
             if status != 200:
                 raise ApiError(502, "BANGUMI_HTTP_ERROR", f"Bangumi 返回 HTTP {status}。")
-            data = bytearray()
-            for chunk in response.iter_content(chunk_size=16384):
-                data.extend(chunk)
-                if len(data) > MAX_RESPONSE:
-                    raise ApiError(502, "BANGUMI_RESPONSE_TOO_LARGE", "Bangumi 响应超出大小限制。")
-            return json.loads(data)
+            return json.loads(read_bytes(response, MAX_RESPONSE))
+
+    def test(self):
+        started = time.monotonic()
+        used_token = "Authorization" in self.session.headers
+        if used_token:
+            data = self.request("/v0/me")
+            valid = isinstance(data, dict) and type(data.get("id")) is int
+        else:
+            data = self.request("/v0/search/subjects?limit=1", {"keyword": "漫画", "filter": {"type": [1]}})
+            valid = isinstance(data, dict) and isinstance(data.get("data"), list)
+        if not valid:
+            raise ApiError(502, "BANGUMI_INVALID_RESPONSE", "Bangumi 返回了无法识别的测试响应。")
+        return {"connected": True, "authenticated": True if used_token else None,
+                "viaProxy": bool(self.proxy_url), "elapsedMs": round((time.monotonic() - started) * 1000)}
+
+    def cover(self, url):
+        if not isinstance(url, str) or len(url) > 500:
+            raise ApiError(502, "BANGUMI_COVER_INVALID", "Bangumi 封面地址无效。")
+        parsed = urlsplit(url)
+        if (parsed.scheme != "https" or parsed.netloc != "lain.bgm.tv" or parsed.query or parsed.fragment
+                or not re.fullmatch(r"/pic/cover/[A-Za-z0-9_/-]+\.(?:jpe?g|png|webp)", parsed.path, re.IGNORECASE)):
+            raise ApiError(502, "BANGUMI_COVER_INVALID", "Bangumi 封面地址无效。")
+        # The image CDN only receives an image request, without the API bearer.
+        with bangumi_session(self.proxy_url) as session, session.get(
+            url, headers={"Accept": ", ".join(sorted(COVER_MIMES))},
+            timeout=(3, 5), allow_redirects=False, stream=True,
+        ) as response:
+            mime = response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+            if response.status_code != 200 or mime not in COVER_MIMES:
+                raise ApiError(502, "BANGUMI_COVER_INVALID", "Bangumi 封面响应不可用。")
+            data = read_bytes(response, MAX_COVER)
+            if not data:
+                raise ApiError(502, "BANGUMI_COVER_INVALID", "Bangumi 封面文件为空。")
+            return {"mime": mime, "data": base64.b64encode(data).decode("ascii")}
 
     def search_candidates(self, query):
         return self.request("/v0/search/subjects?limit=20", {
@@ -174,17 +227,21 @@ def metadata(bangumi, subject_id, kind, scope, options):
     return result
 
 
-def configured_source(mode, token):
+def configured_source(mode, token, proxy_url=""):
     if mode == "archive":
         directory = os.environ.get("BANGUMI_ARCHIVE_DIR")
         if not directory or not all((Path(directory) / file).is_file() for file in
                                     ("subject.jsonlines", "subject-relations.jsonlines")):
             raise ApiError(503, "BANGUMI_ARCHIVE_UNAVAILABLE", "尚未挂载 Bangumi 官方档案。")
         return Archive(directory)
-    return Bangumi(token)
+    return Bangumi(token, proxy_url)
 
 
 def dispatch(bangumi, operation, params):
+    if operation in ("test", "cover"):
+        if not isinstance(bangumi, Bangumi):
+            raise ApiError(422, "BANGUMI_LIVE_REQUIRED", "此操作需要 Bangumi 实时 API。")
+        return bangumi.test() if operation == "test" else bangumi.cover(params.get("url"))
     kind = params.get("kind")
     scope = params.get("scope")
     if kind not in PLATFORMS or scope not in ("series", "book"):
@@ -213,15 +270,25 @@ def serve():
             config = request.get("bangumi", {})
             mode = config.get("sourceMode") or ("archive" if os.environ.get("BANGUMI_ARCHIVE_DIR") else "live")
             token = config.get("accessToken", "") if mode == "live" else ""
-            if (mode, token) != current:
-                bangumi = configured_source(mode, token)
-                current = (mode, token)
+            proxy_url = config.get("proxyUrl", "") if mode == "live" else ""
+            if (mode, token, proxy_url) != current:
+                selected = configured_source(mode, token, proxy_url)
+                if isinstance(bangumi, Bangumi):
+                    bangumi.session.close()
+                bangumi = selected
+                current = (mode, token, proxy_url)
             payload = dispatch(bangumi, request["operation"], request["params"])
             status = 200
         except ApiError as error:
             status, payload = error.status, {"error": {"code": error.code, "message": str(error)}}
+        except requests.exceptions.ProxyError:
+            status, payload = 502, {"error": {"code": "BANGUMI_PROXY_FAILED", "message": "代理连接失败，请核对地址及 NAS 的访问权限。"}}
+        except requests.exceptions.SSLError:
+            status, payload = 502, {"error": {"code": "BANGUMI_TLS_FAILED", "message": "Bangumi 或 HTTPS 代理的证书验证失败。"}}
         except requests.Timeout:
             status, payload = 504, {"error": {"code": "BANGUMI_TIMEOUT", "message": "Bangumi 响应超时。"}}
+        except requests.exceptions.ConnectionError:
+            status, payload = 502, {"error": {"code": "BANGUMI_CONNECTION_FAILED", "message": "Studio 无法连接 Bangumi 实时 API。"}}
         except (requests.RequestException, ValueError, KeyError, TypeError, AttributeError):
             status, payload = 502, {"error": {"code": "BANGUMI_ERROR", "message": "Bangumi 不可用或返回了无法转换的数据。"}}
         print(json.dumps({"id": request_id, "status": status, "payload": payload}, ensure_ascii=False),

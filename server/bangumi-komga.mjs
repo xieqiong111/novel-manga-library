@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto'
 import { normalizeKomgaUrl } from './komga-client.mjs'
-import { bangumiCoverUrl, downloadBangumiCover } from './bangumi-cover.mjs'
+import { bangumiCoverUrl, decodeBangumiCover, downloadBangumiCover } from './bangumi-cover.mjs'
 import { defaultScrapeOptions } from './scrape-options.mjs'
 
 export class MetadataError extends Error {
@@ -143,10 +143,10 @@ async function previewCover(client, scope, id, data) {
   }
 }
 
-async function applyCover(client, scope, id, url, fetchImpl) {
+async function applyCover(client, scope, id, url, fetchCover) {
   try {
     if (!await client.hasUploadedCover(scope, id)) {
-      const { image, filename } = await downloadBangumiCover(url, fetchImpl)
+      const { image, filename } = await fetchCover(url)
       if (!await client.hasUploadedCover(scope, id)) {
         await client.uploadCover(scope, id, image, filename)
         return { status: 'applied' }
@@ -158,7 +158,7 @@ async function applyCover(client, scope, id, url, fetchImpl) {
   }
 }
 
-export function createBangumiKomga({ url, requestMetadata, komga, getOptions, scanAfterApply, fetchImpl = fetch }) {
+export function createBangumiKomga({ url, requestMetadata, komga, getOptions, getBangumiProxy, scanAfterApply, fetchImpl = fetch }) {
   const preferences = () => getOptions?.() ?? defaultScrapeOptions
   const previews = new Map()
   const writes = new Set()
@@ -194,6 +194,11 @@ export function createBangumiKomga({ url, requestMetadata, komga, getOptions, sc
       if (error?.name === 'TimeoutError') throw new MetadataError(504, 'BANGUMIKOMGA_TIMEOUT', 'BangumiKomga 响应超时。')
       throw new MetadataError(502, 'BANGUMIKOMGA_UNAVAILABLE', 'BangumiKomga 不可用或返回了无效数据。')
     }
+  }
+
+  async function fetchCover(coverUrl) {
+    if (requestMetadata && getBangumiProxy?.()) return decodeBangumiCover(await adapter('cover', { url: coverUrl }))
+    return downloadBangumiCover(coverUrl, fetchImpl)
   }
 
   async function preview(body) {
@@ -263,7 +268,7 @@ export function createBangumiKomga({ url, requestMetadata, komga, getOptions, sc
       if (hasPatch) await current.patchMetadata(item.scope, item.id, item.patch)
       const pendingCover = item.result.cover
       const cover = pendingCover?.status === 'pending'
-        ? await applyCover(current, item.scope, item.id, pendingCover.url, fetchImpl)
+        ? await applyCover(current, item.scope, item.id, pendingCover.url, fetchCover)
         : pendingCover
       const updated = hasPatch || cover?.status === 'applied'
       const scan = updated ? await scanAfterApply?.(current, target.libraryId) : null

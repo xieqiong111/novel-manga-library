@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { expect, it } from 'vitest'
+import { expect, it, vi } from 'vitest'
 import { openStudioAuth } from '../../server/auth.mjs'
 import { createApi } from '../../server/api.mjs'
 
@@ -78,9 +78,12 @@ it('scopes the DSH credential and never returns stored secrets', async () => {
     await writeFile(path.join(archive, 'subject.jsonlines'), '')
     await writeFile(path.join(archive, 'subject-relations.jsonlines'), '')
     await writeFile(path.join(archive, 'archive_update_time.json'), '{"last_updated":"2026-11-17T21:04:20Z"}')
+    const probe = vi.fn(async () => ({
+      status: 200, payload: { connected: true, authenticated: true, viaProxy: true, elapsedMs: 37 },
+    }))
     const settings = {
       config: { dataDir }, auth, token: '', komgaAllowedUrls: ['http://komga:25600'],
-      bangumiKomgaScript: '/fixture/converter.py', bangumiArchiveDir: archive,
+      bangumiKomgaScript: '/fixture/converter.py', bangumiArchiveDir: archive, bangumiWorker: { request: probe },
     }
     const integrations = await loadIntegrations(settings)
     const api = createApi({ dartAvailable: true }, { ...settings, integrations }, { warn() {} })
@@ -106,14 +109,37 @@ it('scopes the DSH credential and never returns stored secrets', async () => {
       managed: true, archiveAvailable: true, archiveVersion: '2026-11-17T21:04:20.000Z',
       sourceMode: 'archive', hasAccessToken: false, hasSavedAccessToken: false,
     })
-    const bangumi = { action: 'save-bangumi-settings', sourceMode: 'live', accessToken: 'fake-bangumi.credential' }
+    const bangumi = { action: 'save-bangumi-settings', sourceMode: 'live',
+      accessToken: 'fake-bangumi.credential', proxyUrl: 'http://proxy.example:7890/' }
+    const draft = { action: 'test-bangumi-connection', proxyUrl: 'https://draft.example:8443' }
     expect((await send('POST', route, bangumi)).status).toBe(401)
     const configured = await (await send('POST', route, bangumi, cookie)).json()
-    expect(configured.bangumi).toMatchObject({ sourceMode: 'live', hasSavedAccessToken: true })
+    expect(configured.bangumi).toMatchObject({ sourceMode: 'live', hasSavedAccessToken: true, proxyUrl: 'http://proxy.example:7890' })
     expect(JSON.stringify(configured)).not.toContain(bangumi.accessToken)
-    expect((await loadIntegrations(settings))?.bangumi).toEqual({ sourceMode: 'live', accessToken: bangumi.accessToken })
+    expect((await loadIntegrations(settings))?.bangumi).toEqual({
+      sourceMode: 'live', accessToken: bangumi.accessToken, proxyUrl: 'http://proxy.example:7890',
+    })
+    expect((await send('POST', route, draft)).status).toBe(401)
+    for (const invalid of ['file:///etc/passwd', 'http://user:password@proxy.example', 'http://proxy.example/path']) {
+      expect((await send('POST', route, { ...draft, proxyUrl: invalid }, cookie)).status).toBe(400)
+      expect((await send('POST', route, { ...bangumi, proxyUrl: invalid }, cookie)).status).toBe(400)
+    }
+    expect(probe).not.toHaveBeenCalled()
+    const checked = await (await send('POST', route, draft, cookie)).json()
+    expect(checked).toEqual({ connected: true, authenticated: true, viaProxy: true, elapsedMs: 37 })
+    expect(probe).toHaveBeenCalledExactlyOnceWith('test', {}, {
+      sourceMode: 'live', accessToken: bangumi.accessToken, proxyUrl: 'https://draft.example:8443',
+    })
+    expect((await send('POST', route, draft, cookie)).status).toBe(429)
+    const unchanged = await (await send('GET', route, undefined, cookie)).json()
+    expect(unchanged.bangumi.proxyUrl).toBe('http://proxy.example:7890')
+    expect(JSON.stringify(unchanged)).not.toContain(bangumi.accessToken)
     const cleared = await (await send('POST', route, { action: bangumi.action, sourceMode: 'archive', clearAccessToken: true }, cookie)).json()
-    expect(cleared.bangumi).toMatchObject({ sourceMode: 'archive', hasAccessToken: false, hasSavedAccessToken: false })
+    expect(cleared.bangumi).toMatchObject({
+      sourceMode: 'archive', hasAccessToken: false, hasSavedAccessToken: false, proxyUrl: 'http://proxy.example:7890',
+    })
+    await send('POST', route, { action: bangumi.action, sourceMode: 'archive', proxyUrl: '' }, cookie)
+    expect((await loadIntegrations(settings))?.bangumi.proxyUrl).toBe('')
     const preferences = { action: 'save-komga-preferences', scrapeEnabled: true, refreshMode: 'manual' }
     expect((await send('POST', route, preferences)).status).toBe(401)
     expect((await send('POST', route, { ...preferences, scrapeEnabled: 'true' }, cookie)).status).toBe(400)

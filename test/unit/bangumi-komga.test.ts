@@ -180,6 +180,26 @@ describe('BangumiKomga metadata', () => {
     expect(fetchImpl).toHaveBeenCalledOnce()
   })
 
+  it('uses the configured Bangumi proxy for live cover downloads through the worker', async () => {
+    const { komga, state, upload } = fixture()
+    state.links.push({ label: 'Bangumi', url: 'https://bgm.tv/subject/123' })
+    const coverUrl = 'https://lain.bgm.tv/pic/cover/l/123.jpg'
+    const fetchImpl = vi.fn()
+    const requestMetadata = vi.fn(async (operation: string) => ({ status: 200, payload: operation === 'cover'
+      ? { data: Buffer.from('test-cover').toString('base64'), mime: 'image/jpeg' }
+      : { subject, metadata: {}, source: 'bangumi-live', coverUrl },
+    }))
+    const run = createBangumiKomga({
+      komga: () => komga, getOptions: () => ({ ...defaultScrapeOptions, seriesCover: true }),
+      getBangumiProxy: () => 'http://proxy.example:7890', requestMetadata, fetchImpl,
+    })
+    const preview = await run('preview', seriesInput)
+    expect(await run('apply', { previewId: preview.previewId })).toMatchObject({ updated: true, cover: { status: 'applied' } })
+    expect(requestMetadata).toHaveBeenLastCalledWith('cover', { url: coverUrl })
+    expect(fetchImpl).not.toHaveBeenCalled()
+    expect(upload).toHaveBeenCalledOnce()
+  })
+
   it('reports no update when a cover-only upload fails', async () => {
     const { komga, state, upload } = fixture()
     state.links.push({ label: 'Bangumi', url: 'https://bgm.tv/subject/123' })

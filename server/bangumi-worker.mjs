@@ -7,7 +7,7 @@ import { MetadataError } from './bangumi-komga.mjs'
 const timeoutMs = 16000
 
 export async function startBangumiWorker(settings, logger) {
-  if (!settings.bangumiKomgaScript || !settings.metadataTokenFile || settings.bangumiKomgaUrl) return
+  if (!settings.bangumiKomgaScript || settings.bangumiKomgaUrl) return
 
   const cwd = path.join(settings.config.dataDir, 'bangumikomga-worker')
   try {
@@ -78,14 +78,14 @@ export async function startBangumiWorker(settings, logger) {
 
   launch()
   return {
-    request(operation, params) {
+    request(operation, params, connection) {
       if (stopped || !child?.stdin?.writable) return Promise.reject(unavailable())
       return new Promise((resolve, reject) => {
         const id = ++nextId
         const timer = setTimeout(() => settle(id, (entry) =>
           entry.reject(new MetadataError(504, 'BANGUMIKOMGA_TIMEOUT', '内置 BangumiKomga 响应超时。'))), timeoutMs)
         pending.set(id, { resolve, reject, timer })
-        const bangumi = settings.integrations?.bangumi ?? {
+        const bangumi = connection ?? settings.integrations?.bangumi ?? {
           sourceMode: settings.bangumiArchiveDir ? 'archive' : 'live',
           accessToken: settings.bangumiAccessToken ?? '',
         }

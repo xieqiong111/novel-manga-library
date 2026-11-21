@@ -12,6 +12,23 @@ const defaultKomgaRefreshMode = 'after-sync'
 const settingsPath = '/api/settings/integrations'
 const digest = (value) => createHash('sha256').update(value).digest('hex')
 
+function normalizeBangumiProxy(value) {
+  if (typeof value !== 'string' || value.length > 512) return null
+  const raw = value.trim()
+  if (!raw) return ''
+  if (!/^https?:\/\//i.test(raw) || /[\\\x00-\x20\x7f]/.test(raw) || /[?#]/.test(raw)) return null
+  const authority = raw.slice(raw.indexOf('://') + 3).replace(/\/$/, '')
+  if (!authority || /[\/@]/.test(authority)) return null
+  try {
+    const proxy = new URL(raw)
+    return proxy.hostname && proxy.pathname === '/' ? proxy.origin : null
+  } catch {
+    return null
+  }
+}
+
+const validBangumiToken = (value) => value === undefined || (typeof value === 'string' && /^[\x21-\x7e]{1,768}$/.test(value))
+
 export function isDshReadRoute(method, pathname) {
   return method === 'GET' && (
     ['/api/health', '/api/library', '/api/library/stats', '/api/tasks',
@@ -49,6 +66,8 @@ export async function loadIntegrations(settings) {
     return next
   }
   const managed = Boolean(settings.bangumiKomgaScript && !settings.bangumiKomgaUrl)
+  let bangumiTesting = false
+  let lastBangumiTest = -Infinity
   const scraperConfigured = Boolean((managed || settings.bangumiKomgaUrl) && settings.metadataTokenFile)
   let archiveAvailable = false
   let archiveVersion = null
@@ -69,6 +88,7 @@ export async function loadIntegrations(settings) {
     sourceMode: ['live', 'archive'].includes(saved.bangumi?.sourceMode)
       ? saved.bangumi.sourceMode : archiveAvailable ? 'archive' : 'live',
     accessToken: saved.bangumi?.accessToken || settings.bangumiAccessToken || '',
+    proxyUrl: normalizeBangumiProxy(saved.bangumi?.proxyUrl) ?? '',
   })
   const preferences = () => ({
     scrapeEnabled: saved.preferences?.scrapeEnabled ?? scraperConfigured,
@@ -86,6 +106,7 @@ export async function loadIntegrations(settings) {
     bangumi: {
       managed, archiveAvailable, archiveVersion, sourceMode: bangumi().sourceMode,
       hasAccessToken: Boolean(bangumi().accessToken), hasSavedAccessToken: Boolean(saved.bangumi?.accessToken),
+      ...(bangumi().proxyUrl ? { proxyUrl: bangumi().proxyUrl } : {}),
     },
     dsh: { active: Boolean(saved.dsh?.digest), createdAt: saved.dsh?.createdAt ?? null },
   })
@@ -118,7 +139,7 @@ export async function loadIntegrations(settings) {
         return true
       }
       try {
-        const { action, url: address, apiKey, scrapeEnabled, refreshMode, scrapeOptions, sourceMode, accessToken, clearAccessToken } = await readBody(req)
+        const { action, url: address, apiKey, scrapeEnabled, refreshMode, scrapeOptions, sourceMode, accessToken, clearAccessToken, proxyUrl } = await readBody(req)
         if (action === 'save-komga') {
           let target
           try { target = normalizeKomgaUrl(address) } catch { /* invalid URL */ }
@@ -164,21 +185,65 @@ export async function loadIntegrations(settings) {
             saved = next
           })
           sendJson(res, 200, status())
+        } else if (action === 'test-bangumi-connection') {
+          if (!managed || !settings.bangumiWorker) {
+            sendError(res, 503, 'BANGUMIKOMGA_UNAVAILABLE', '当前部署的 Bangumi 服务暂不可用。')
+            return true
+          }
+          const testedProxy = proxyUrl === undefined ? bangumi().proxyUrl : normalizeBangumiProxy(proxyUrl)
+          if (testedProxy === null || !validBangumiToken(accessToken)) {
+            sendError(res, 400, 'INVALID_BANGUMI_SETTINGS', '请检查 Bangumi 令牌和 HTTP(S) 代理地址。')
+            return true
+          }
+          if (bangumiTesting || Date.now() - lastBangumiTest < 3000) {
+            sendError(res, 429, 'BANGUMI_TEST_BUSY', '请稍后再测试 Bangumi 连接。')
+            return true
+          }
+          lastBangumiTest = Date.now()
+          bangumiTesting = true
+          try {
+            const reply = await settings.bangumiWorker.request('test', {}, {
+              sourceMode: 'live', accessToken: accessToken ?? bangumi().accessToken, proxyUrl: testedProxy,
+            })
+            const result = reply.payload
+            if (reply.status !== 200) {
+              const upstream = result?.error
+              const allowed = /^BANGUMI_[A-Z_]+$/.test(upstream?.code ?? '') && typeof upstream?.message === 'string'
+              sendError(res, [400, 422, 429, 502, 503, 504].includes(reply.status) ? reply.status : 502,
+                allowed ? upstream.code : 'BANGUMI_TEST_FAILED',
+                allowed ? upstream.message : 'Bangumi 连接未通过。')
+            } else if (result?.connected === true && [true, null].includes(result.authenticated) &&
+                       result.viaProxy === Boolean(testedProxy) && Number.isInteger(result.elapsedMs) && result.elapsedMs >= 0) {
+              const { connected, authenticated, viaProxy, elapsedMs } = result
+              sendJson(res, 200, { connected, authenticated, viaProxy, elapsedMs })
+            } else {
+              sendError(res, 502, 'BANGUMI_TEST_FAILED', 'Bangumi 测试返回了无法识别的数据。')
+            }
+          } catch (error) {
+            const timedOut = error.code === 'BANGUMIKOMGA_TIMEOUT'
+            sendError(res, timedOut ? 504 : 503, timedOut ? 'BANGUMI_TIMEOUT' : 'BANGUMIKOMGA_UNAVAILABLE',
+              timedOut ? 'Bangumi 连接测试超时。' : '当前部署的 Bangumi 服务暂不可用。')
+          } finally {
+            bangumiTesting = false
+          }
         } else if (action === 'save-bangumi-settings') {
           if (!managed) {
             sendError(res, 409, 'BANGUMI_SETTINGS_EXTERNAL', '此部署没有内置 Bangumi 配置。')
             return true
           }
+          const proxy = proxyUrl === undefined ? undefined : normalizeBangumiProxy(proxyUrl)
           if (!['live', 'archive'].includes(sourceMode) || (sourceMode === 'archive' && !archiveAvailable) ||
               (clearAccessToken !== undefined && typeof clearAccessToken !== 'boolean') ||
-              (accessToken !== undefined && (typeof accessToken !== 'string' || !/^[\x21-\x7e]{1,768}$/.test(accessToken))) ||
-              (clearAccessToken && accessToken !== undefined)) {
-            sendError(res, 400, 'INVALID_BANGUMI_SETTINGS', '请选择可用的数据源，并检查 Bangumi 令牌格式。')
+              !validBangumiToken(accessToken) || proxy === null || (clearAccessToken && accessToken !== undefined)) {
+            sendError(res, 400, 'INVALID_BANGUMI_SETTINGS', '请选择可用的数据源，并检查 Bangumi 令牌和 HTTP(S) 代理地址。')
             return true
           }
           await update(async () => {
             const token = clearAccessToken ? '' : (accessToken ?? saved.bangumi?.accessToken)
-            const next = { ...saved, bangumi: { sourceMode, ...(token ? { accessToken: token } : {}) } }
+            const retainedProxy = proxy ?? bangumi().proxyUrl
+            const next = { ...saved, bangumi: {
+              sourceMode, ...(token ? { accessToken: token } : {}), ...(retainedProxy ? { proxyUrl: retainedProxy } : {}),
+            } }
             await atomicWriteJson(file, next)
             saved = next
           })

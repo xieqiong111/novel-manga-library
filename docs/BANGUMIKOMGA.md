@@ -31,7 +31,11 @@ Studio 在 Web 容器内运行 [BangumiKomga](https://github.com/chu-shen/Bangum
 
 自动刷新默认为「同步路径后」。可改为「仅手动刷新」，或设为「同步路径或刮削写入后」，让成功写入元数据的操作也向 Komga 提交书库扫描。搜索和预览不会触发扫描。`apply` 响应中的 `updated` 表示元数据字段或封面至少有一项写入成功，`scan.accepted` 单独表示 Komga 是否接受后台扫描，`scan.skipped` 表示本次未启用自动扫描。
 
-「Bangumi 配置」可以选择官方实时 API 或已安装的官方离线档案，也可填写或清除用于实时 API 的 Bangumi 访问令牌。保存立即生效。
+「Bangumi 配置」可以选择官方实时 API 或已安装的官方离线档案，也可填写或清除用于实时 API 的 Bangumi 访问令牌。保存后页面持续显示已保存状态和掩码，刷新页面后仍可确认配置。点击「修改令牌」填写替代值。
+
+「Bangumi 代理地址」接受 Studio 所在容器可访问的 HTTP(S) 转发代理，如 `http://192.168.1.10:7890`。地址只填写协议、主机和端口。保存后，实时查询和 Bangumi 封面下载走该代理。留空时直连。
+
+「测试 Bangumi 连接」使用页面当前填写的代理和令牌。令牌输入框处于掩码状态或留空时，使用服务器已保存的值。测试不会保存草稿，也不会修改书库或切换数据源。提供令牌时验证 Bangumi 的认证接口。管理员也可通过 `POST /api/settings/integrations` 传入 `action: "test-bangumi-connection"`，以及可选的 `proxyUrl` 和 `accessToken`。用 `save-bangumi-settings` 保存 `proxyUrl`，提交空字符串清除代理。
 
 「匹配与写入」参考 [BangumiKomga 配置模板](https://github.com/chu-shen/BangumiKomga/blob/3ce5304707e4b8860b48d701b03f89bf421bac7e/config/config.template.py)。设置由 Studio 保存，DSH 调用时自动读取。
 

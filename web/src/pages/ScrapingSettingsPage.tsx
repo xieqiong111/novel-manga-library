@@ -37,10 +37,19 @@ interface ScrapingStatus {
     sourceMode: SourceMode
     hasAccessToken: boolean
     hasSavedAccessToken: boolean
+    proxyUrl?: string
   }
 }
 
+interface BangumiProbe {
+  connected: true
+  authenticated: true | null
+  viaProxy: boolean
+  elapsedMs: number
+}
+
 const endpoint = '/settings/integrations'
+const tokenMask = '••••••••••••'
 const input = 'mt-1 w-full rounded-lg border border-line bg-surface-soft px-3 py-2 text-sm outline-none focus:border-accent'
 
 export function ScrapingSettingsPage() {
@@ -72,12 +81,38 @@ function ScrapingForms({ initial }: { initial: ScrapingStatus }) {
   }
   const [sourceMode, setSourceMode] = useState<SourceMode>(initial.bangumi.sourceMode)
   const [accessToken, setAccessToken] = useState('')
-  const [saving, setSaving] = useState<'scrape' | 'bangumi' | null>(null)
+  const [editingAccessToken, setEditingAccessToken] = useState(false)
+  const [proxyUrl, setProxyUrl] = useState(initial.bangumi.proxyUrl ?? '')
+  const [testResult, setTestResult] = useState<{ message: string; success: boolean } | null>(null)
+  const [saving, setSaving] = useState<'scrape' | 'bangumi' | 'bangumi-test' | null>(null)
   const [error, setError] = useState('')
   const busy = saving !== null
   const preferencesChanged = scrapeEnabled !== status.preferences.scrapeEnabled || refreshMode !== status.preferences.refreshMode ||
     JSON.stringify(options) !== JSON.stringify(status.preferences.scrapeOptions ?? defaultOptions)
-  const bangumiChanged = sourceMode !== status.bangumi.sourceMode || Boolean(accessToken.trim())
+  const showTokenMask = status.bangumi.hasAccessToken && !editingAccessToken
+  const bangumiChanged = sourceMode !== status.bangumi.sourceMode || Boolean(accessToken.trim()) ||
+    proxyUrl.trim() !== (status.bangumi.proxyUrl ?? '')
+
+  async function testBangumi() {
+    setSaving('bangumi-test')
+    setTestResult(null)
+    setError('')
+    try {
+      const token = accessToken.trim()
+      const result = await apiFetch<BangumiProbe>(endpoint, {
+        method: 'POST', body: JSON.stringify({
+          action: 'test-bangumi-connection', proxyUrl: proxyUrl.trim(), ...(token ? { accessToken: token } : {}),
+        }),
+      })
+      const route = result.viaProxy ? '通过代理' : '直连'
+      setTestResult({ success: true,
+        message: `Bangumi 连接成功 · ${route} · ${result.elapsedMs} 毫秒${result.authenticated ? ' · 令牌验证通过' : ''}` })
+    } catch (failure) {
+      setTestResult({ success: false, message: failure instanceof Error ? failure.message : 'Bangumi 测试失败。' })
+    } finally {
+      setSaving(null)
+    }
+  }
 
   async function save(section: 'scrape' | 'bangumi', clearAccessToken = false) {
     setSaving(section)
@@ -86,13 +121,18 @@ function ScrapingForms({ initial }: { initial: ScrapingStatus }) {
       const token = accessToken.trim()
       const body = section === 'scrape' ? { action: 'save-komga-preferences', scrapeEnabled, refreshMode, scrapeOptions: options }
         : {
-            action: 'save-bangumi-settings', sourceMode,
-            ...(clearAccessToken ? { clearAccessToken: true } : token ? { accessToken: token } : {}),
+            action: 'save-bangumi-settings', sourceMode: clearAccessToken ? status.bangumi.sourceMode : sourceMode,
+            ...(clearAccessToken ? { clearAccessToken: true }
+              : { proxyUrl: proxyUrl.trim(), ...(token ? { accessToken: token } : {}) }),
           }
       const next = await apiFetch<ScrapingStatus>(endpoint, { method: 'POST', body: JSON.stringify(body) })
       setStatus(next)
-      if (section === 'bangumi') setAccessToken('')
-      else setOptions(next.preferences.scrapeOptions ?? defaultOptions)
+      if (section === 'bangumi') {
+        setAccessToken('')
+        setEditingAccessToken(false)
+        if (clearAccessToken) setTestResult(null)
+        else setProxyUrl(next.bangumi.proxyUrl ?? '')
+      } else setOptions(next.preferences.scrapeOptions ?? defaultOptions)
       toast({ tone: 'success', title: section === 'scrape' ? '刮削设置已保存' : 'Bangumi 配置已保存' })
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : '保存失败。')
@@ -204,18 +244,46 @@ function ScrapingForms({ initial }: { initial: ScrapingStatus }) {
                     : '尚未安装官方离线档案。'}
               </p>
             </div>
-            <label className="block text-sm text-ink-soft">Bangumi 访问令牌（可选）
-              <input type="password" name="bangumi-access-token" autoComplete="off" className={input}
-                value={accessToken} onChange={(event) => setAccessToken(event.target.value)} maxLength={768}
-                placeholder={status.bangumi.hasAccessToken ? '已配置 · 输入新令牌可替换' : '仅实时 API 使用'}
-                disabled={busy || !status.bangumi.managed || sourceMode !== 'live'} />
-            </label>
+            <div>
+              <label className="block text-sm text-ink-soft">Bangumi 访问令牌（可选）
+                <input type="password" name="bangumi-access-token" autoComplete="new-password" className={input}
+                  value={showTokenMask ? tokenMask : accessToken} maxLength={768} readOnly={showTokenMask}
+                  onChange={(event) => { setAccessToken(event.target.value); setTestResult(null) }}
+                  aria-describedby="bangumi-token-help" placeholder="输入 Bangumi 访问令牌"
+                  disabled={busy || !status.bangumi.managed} />
+              </label>
+              <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+                <p id="bangumi-token-help" className="text-xs text-ink-soft">
+                  {status.bangumi.hasSavedAccessToken ? '已保存 · 仅实时 API 使用'
+                    : status.bangumi.hasAccessToken ? '已由服务器配置 · 仅实时 API 使用' : '仅实时 API 使用'}
+                </p>
+                {status.bangumi.hasAccessToken && <Button type="button" size="sm" disabled={busy || !status.bangumi.managed}
+                  onClick={() => { setEditingAccessToken(!editingAccessToken); setAccessToken(''); setTestResult(null) }}>
+                  {editingAccessToken ? '取消修改令牌' : '修改令牌'}
+                </Button>}
+              </div>
+            </div>
+            <div>
+              <label className="block text-sm text-ink-soft">Bangumi 代理地址（可选）
+                <input type="text" name="bangumi-proxy-url" autoComplete="off" className={input}
+                  value={proxyUrl} onChange={(event) => { setProxyUrl(event.target.value); setTestResult(null) }}
+                  maxLength={512} placeholder="http://192.168.1.10:7890" aria-describedby="bangumi-proxy-help"
+                  disabled={busy || !status.bangumi.managed} />
+              </label>
+              <p id="bangumi-proxy-help" className="mt-2 text-xs leading-relaxed text-ink-soft">
+                填写 Studio 容器可访问的 HTTP(S) 代理地址。留空则直连。连接测试使用当前输入的配置。
+              </p>
+            </div>
             <div className="flex flex-wrap gap-2">
               <Button type="submit" size="sm" variant="primary" loading={saving === 'bangumi'}
                 disabled={busy || !status.bangumi.managed || !bangumiChanged}>保存 Bangumi 配置</Button>
+              <Button type="button" size="sm" loading={saving === 'bangumi-test'} disabled={busy || !status.bangumi.managed}
+                onClick={() => void testBangumi()}>测试 Bangumi 连接</Button>
               {status.bangumi.hasSavedAccessToken && <Button type="button" size="sm" disabled={busy}
                 onClick={() => void save('bangumi', true)}>清除已保存令牌</Button>}
             </div>
+            {testResult && <p role={testResult.success ? 'status' : 'alert'}
+              className={`text-sm ${testResult.success ? 'text-positive' : 'text-negative'}`}>{testResult.message}</p>}
           </form>
         </Card>
       </div>
