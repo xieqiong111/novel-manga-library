@@ -109,6 +109,6 @@ DSH 可将令牌保存在仅运行用户可读的文件中，并设置 `LN_STUDI
 
 ## 截图与开发
 
-[桌面书库](../docs/images/studio-library.jpg) · [手机漫画详情](../docs/images/studio-manga-mobile.jpg) · [开发和验证](../docs/README.md#开发和验证)
+[开发和验证](../docs/README.md#开发和验证)
 
 早期设计的截图和排版对照仍保存在 [web/docs](docs/COMPARISON.md)。

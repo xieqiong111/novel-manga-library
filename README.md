@@ -4,10 +4,6 @@
 
 [本地预览](#本地预览) · [飞牛 NAS 部署](docs/DEPLOY-NAS.md#4-web-管理台bff--live-前端) · [使用手册](web/README.md) · [DSH 插件](docs/DSH-MANGA.md)
 
-![桌面端书库，同一网格展示轻小说与漫画演示条目](docs/images/studio-library.jpg)
-
-*截图为演示模式，使用项目内置示例。*
-
 ## 从搜索到入库
 
 **下载轻小说。** 找到作品后选卷，交给 Dart 下载引擎生成 EPUB。已完成的文件可在书库查看、下载和校验。需要单文件阅读时，可将多卷合成一个 EPUB。
@@ -15,13 +11,6 @@
 **下载漫画。** 搜索已在 Suwayomi 安装的来源，按章节提交下载，查看真实队列状态。启用归档服务后，还可把有卷号且已下载齐全的章节按卷打包为 CBZ，直接写入 Komga 对应的目录。
 
 **整理自己的书库。** 轻小说和漫画可以分别选定 NAS 保存位置，也可以同步 Komga 的书库路径。Studio 提供书库浏览和下载管理，Komga 负责扫描、阅读和阅读进度。网页支持桌面与手机布局，并提供浅色、深色和跟随系统三种外观。
-
-<details>
-<summary>查看手机端漫画详情</summary>
-
-<img src="docs/images/studio-manga-mobile.jpg" width="390" alt="手机端漫画详情演示，展示封面、书架操作和章节列表">
-
-</details>
 
 ## 给藏书补上 Bangumi 元数据
 
