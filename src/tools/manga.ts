@@ -2,6 +2,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { PluginRuntime } from '../runtime.js'
 import { readStudio } from '../../server/studio-reader.mjs'
+import { studioDelegated, studioJob } from '../../server/studio-jobs.mjs'
 import type { MangaArchiveStatus, MangaKomga } from '../../server/manga-komga.mjs'
 import type { SuwayomiClient, SuwayomiTask } from '../../server/suwayomi-client.mjs'
 import { canonical, jsonOutput, ok } from './common.js'
@@ -11,6 +12,7 @@ type MangaRuntime = PluginRuntime & { suwayomi: SuwayomiClient }
 const MAX_PAGE_SIZE = 100
 
 const automaticArchive = [
+  'In managed mode Studio owns all task execution. Follow the reported API results and do not start a local downloader.',
   'When the archive service is enabled, the Docker worker automatically packages each completed chapter into its own CBZ. Never wait for a volume or manually package pages.',
   'Use actual chapter IDs. Select individually downloadable chapters even when their names contain volume markers. If a source only has whole-volume entries, choose a source with separate chapters.',
   'The files appear directly in the work-title folder under the configured manga output directory. Existing volume archives are preserved.',
@@ -30,7 +32,7 @@ function safeError(error: unknown): { code: string; message: string; retryable: 
         message: value.message,
         retryable: typeof value.retryable === 'boolean'
           ? value.retryable
-          : typeof value.status === 'number' && value.status >= 500,
+          : value.code !== 'STUDIO_JOB_UNCONFIRMED' && typeof value.status === 'number' && value.status >= 500,
       }
     }
   }
@@ -44,7 +46,7 @@ async function runMangaTool(
   operation: () => Promise<unknown>,
 ) {
   try {
-    await runtime.ready()
+    if (!studioDelegated()) await runtime.ready()
     return canonical(await operation())
   } catch (error) {
     const failure = safeError(error)
@@ -172,7 +174,11 @@ export function registerMangaTools(ctx: Context, runtime: PluginRuntime, komga: 
         const selection = args.chapterIds !== undefined || args.offset !== undefined || args.limit !== undefined
           ? { chapterIds: args.chapterIds === undefined ? undefined : selectedIds(args.chapterIds), offset: args.offset, limit: args.limit }
           : undefined
-        const status = selection ? await komga.status(mangaId, undefined, selection) : await komga.status(mangaId)
+        const status = studioDelegated()
+          ? await studioJob<MangaArchiveStatus>(`/api/manga/${encodeURIComponent(mangaId)}/komga`, {
+            query: { ...selection, chapterIds: selection?.chapterIds?.join(',') },
+          })
+          : selection ? await komga.status(mangaId, undefined, selection) : await komga.status(mangaId)
         return ok({ ...status, notice: archiveNotice(status) })
       })
     },
@@ -197,7 +203,9 @@ export function registerMangaTools(ctx: Context, runtime: PluginRuntime, komga: 
         if (!chapterIds.length) {
           return { ok: false, error: { code: 'MANGA_ARCHIVE_SELECTION_REQUIRED', message: '请选择要下载的章节 ID。' } }
         }
-        const result = await komga.downloadChapters(mangaId, chapterIds)
+        const result = studioDelegated()
+          ? await studioJob<DownloadResult>(`/api/manga/${encodeURIComponent(mangaId)}/komga`, { method: 'POST', body: { chapterIds } })
+          : await komga.downloadChapters(mangaId, chapterIds)
         return downloadReport(result, { tool: 'manga_komga_status', args: { mangaId, chapterIds } })
       })
     },
@@ -230,7 +238,7 @@ export function registerMangaTools(ctx: Context, runtime: PluginRuntime, komga: 
         if (type === 'SEARCH' && !query) {
           return { ok: false, error: { code: 'QUERY_REQUIRED', message: 'Provide query for SEARCH.' } }
         }
-        const result = await client(runtime).searchManga({
+        const input = {
           query,
           sourceId: args.sourceId?.trim() || undefined,
           type: type as 'SEARCH' | 'POPULAR' | 'LATEST',
@@ -238,7 +246,10 @@ export function registerMangaTools(ctx: Context, runtime: PluginRuntime, komga: 
           offset: Math.max(Math.trunc(args.offset ?? 0), 0),
           resultId: args.resultId?.trim() || undefined,
           limit: bounded(args.limit, 20, 50),
-        })
+        }
+        const result = studioDelegated()
+          ? await studioJob<Record<string, unknown>>('/api/manga/search', { query: input })
+          : await client(runtime).searchManga(input)
         return ok({ ...result, notice: '请按作品 ID 和来源确认版本，再查询章节和归档方式。同名结果可能来自不同来源。' })
       })
     },
@@ -253,7 +264,8 @@ export function registerMangaTools(ctx: Context, runtime: PluginRuntime, komga: 
       return runMangaTool(runtime, 'manga_details', async () => {
         const mangaId = requiredId(args.mangaId)
         if (!mangaId) return { ok: false, error: { code: 'MANGA_ID_REQUIRED', message: 'Provide mangaId.' } }
-        return ok({ manga: await client(runtime).getManga(mangaId), notice: '下载前请用 manga_komga_status 确认可按章归档的条目。' })
+        const manga = studioDelegated() ? await studioJob(`/api/manga/${encodeURIComponent(mangaId)}`) : await client(runtime).getManga(mangaId)
+        return ok({ manga, notice: '下载前请用 manga_komga_status 确认可按章归档的条目。' })
       })
     },
   }))
@@ -271,10 +283,13 @@ export function registerMangaTools(ctx: Context, runtime: PluginRuntime, komga: 
       return runMangaTool(runtime, 'manga_chapters', async () => {
         const mangaId = requiredId(args.mangaId)
         if (!mangaId) return { ok: false, error: { code: 'MANGA_ID_REQUIRED', message: 'Provide mangaId.' } }
-        const result = await client(runtime).getChapters(mangaId, {
+        const page = {
           limit: bounded(args.limit, 50),
           offset: Math.max(Math.trunc(args.offset ?? 0), 0),
-        })
+        }
+        const result = studioDelegated()
+          ? await studioJob<Record<string, unknown>>(`/api/manga/${encodeURIComponent(mangaId)}/chapters`, { query: page })
+          : await client(runtime).getChapters(mangaId, page)
         return ok({ ...result, notice: 'number 是来源标注的话号；下载参数 chapterIds 使用 id。请用 manga_komga_status 确认单章归档。' })
       })
     },
@@ -303,7 +318,9 @@ export function registerMangaTools(ctx: Context, runtime: PluginRuntime, komga: 
         if (chapterIds.length === 0) {
           return { ok: false, error: { code: 'CHAPTER_IDS_REQUIRED', message: '请使用 manga_chapters 返回的章节 ID。' } }
         }
-        const result = await client(runtime).download({ mangaId, chapterIds })
+        const result = studioDelegated()
+          ? await studioJob<DownloadResult>(`/api/manga/${encodeURIComponent(mangaId)}/komga`, { method: 'POST', body: { chapterIds } })
+          : await client(runtime).download({ mangaId, chapterIds })
         return downloadReport(result, { tool: 'manga_tasks', args: { mangaId } })
       })
     },
@@ -333,8 +350,16 @@ export function registerMangaTools(ctx: Context, runtime: PluginRuntime, komga: 
         if (action === 'cancel' && chapterIds.length === 0) {
           return { ok: false, error: { code: 'CHAPTER_IDS_REQUIRED', message: 'Provide chapterIds to cancel.' } }
         }
-        const result = await client(runtime).tasks({ action: action as 'status' | 'list' | 'cancel', chapterIds })
         const mangaId = requiredId(args.mangaId)
+        if (studioDelegated()) {
+          const result = action === 'cancel'
+            ? await studioJob<{ queue: SuwayomiTask[] }>('/api/manga/downloads/cancel', { method: 'POST', body: { chapterIds } })
+            : await studioJob<{ queue: SuwayomiTask[]; history?: unknown[] }>('/api/manga/downloads', {
+              query: { mangaId: mangaId ?? undefined, before: args.before },
+            })
+          return ok({ ...result, executor: 'studio', notice: '请按 Studio 返回的队列、完成记录、CBZ 文件及 Komga 刷新状态进行下一步。' })
+        }
+        const result = await client(runtime).tasks({ action: action as 'status' | 'list' | 'cancel', chapterIds })
         const queue = mangaId ? result.queue.filter((task) => task.mangaId === mangaId) : result.queue
         const history = action !== 'cancel' ? await komga.history?.(mangaId, args.before) : null
         const combined = history && 'history' in history && history.history.length > 0
@@ -355,10 +380,12 @@ export function registerMangaTools(ctx: Context, runtime: PluginRuntime, komga: 
     output: jsonOutput(),
     async execute(args) {
       return runMangaTool(runtime, 'manga_library', async () => {
-        return ok({ ...(await client(runtime).library({
+        const query = {
           limit: bounded(args.limit, 50),
           offset: Math.max(Math.trunc(args.offset ?? 0), 0),
-        })) })
+        }
+        return ok(studioDelegated() ? await studioJob<Record<string, unknown>>('/api/manga/library', { query })
+          : await client(runtime).library(query))
       })
     },
   }))
@@ -369,7 +396,8 @@ export function registerMangaTools(ctx: Context, runtime: PluginRuntime, komga: 
     parameters: {},
     output: jsonOutput(),
     async execute() {
-      return runMangaTool(runtime, 'manga_sources', async () => ok({ ...(await client(runtime).sources()) }))
+      return runMangaTool(runtime, 'manga_sources', async () => ok(studioDelegated()
+        ? await studioJob<Record<string, unknown>>('/api/manga/sources') : await client(runtime).sources()))
     },
   }))
 
@@ -388,7 +416,10 @@ export function registerMangaTools(ctx: Context, runtime: PluginRuntime, komga: 
       return runMangaTool(runtime, 'manga_subscribe', async () => {
         const mangaId = requiredId(args.mangaId)
         if (!mangaId) return { ok: false, error: { code: 'MANGA_ID_REQUIRED', message: 'Provide mangaId.' } }
-        return ok({ manga: await client(runtime).setLibrary({ mangaId, inLibrary: args.inLibrary }) })
+        const manga = studioDelegated() ? await studioJob(`/api/manga/${encodeURIComponent(mangaId)}/subscribe`, {
+          method: 'POST', body: { subscribed: args.inLibrary },
+        }) : await client(runtime).setLibrary({ mangaId, inLibrary: args.inLibrary })
+        return ok({ manga })
       })
     },
   }))

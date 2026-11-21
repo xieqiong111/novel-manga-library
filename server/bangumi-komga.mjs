@@ -19,7 +19,8 @@ const subjectId = (value) => Number.isSafeInteger(value) && value > 0 && value <
 const MAX_PREVIEWS = 32
 const PREVIEW_MS = 10 * 60 * 1000
 const simplify = Converter({ from: 't', to: 'cn' })
-const titleKey = (title) => simplify(title.normalize('NFKC')).trim().toLowerCase().replace(/\s+/gu, ' ')
+const titleKey = (title) => simplify(title.normalize('NFKC')).toLowerCase().trim()
+  .replace(/\s+/gu, ' ').replace(/ *([\p{P}\p{S}]) */gu, '$1')
 const hasBangumiLink = (metadata) => Array.isArray(metadata.links) && metadata.links.some((link) =>
   /^(bangumi|cbl)$/i.test(link?.label ?? '') || /^https?:\/\/(bgm\.tv|bangumi\.tv|chii\.in)\/subject\//i.test(link?.url ?? ''))
 

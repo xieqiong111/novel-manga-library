@@ -35,6 +35,8 @@ export interface Volume {
 export type TaskState = 'running' | 'queued' | 'completed' | 'failed' | 'cancelled'
 
 export interface DownloadTask {
+  origin?: 'dsh'
+  updatedTime?: number
   id: string
   novelId: string
   title: string

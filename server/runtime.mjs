@@ -90,6 +90,8 @@ export function readSettings(env = process.env) {
     bangumiArchiveDir: env.BANGUMI_ARCHIVE_DIR || '',
     bangumiAccessToken: env.BANGUMI_ACCESS_TOKEN || '',
     metadataTokenFile: env.LN_STUDIO_METADATA_TOKEN_FILE || '',
+    jobTokenFile: env.LN_STUDIO_JOB_TOKEN_FILE || '',
+    novelTaskHistoryDir: env.LN_STUDIO_NOVEL_TASK_HISTORY_DIR || '',
     komgaAllowedUrls: asList(env.LN_KOMGA_ALLOWED_URLS, []),
     komgaCredentialsConfigured: Boolean(komga.apiKey || komga.username || komga.password),
     host: env.LN_BFF_HOST || '127.0.0.1',

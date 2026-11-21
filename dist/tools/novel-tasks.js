@@ -1,4 +1,5 @@
 import { defineTool } from '@deepseek-ai/dsh-tools';
+import { studioDelegated, studioJob } from '../../server/studio-jobs.mjs';
 import { jsonOutput, ok, runTool } from './common.js';
 const ACTIONS = ['list', 'get', 'cancel', 'retry', 'logs', 'status'];
 const STATES = ['queued', 'running', 'completed', 'failed', 'cancelled', 'interrupted'];
@@ -37,6 +38,32 @@ export function registerNovelTasks(ctx, runtime) {
                     return { ok: false, error: { code: 'UNKNOWN_ACTION', message: `action must be one of ${ACTIONS.join(', ')}` } };
                 }
                 const limit = Math.min(Math.max(Math.trunc(args.limit ?? 20), 1), 200);
+                if (studioDelegated()) {
+                    if (action === 'status')
+                        return ok({ executor: 'studio', status: await studioJob('/api/status') });
+                    if (action === 'logs')
+                        return ok({ executor: 'studio', activities: await studioJob('/api/activities') });
+                    if (action === 'list') {
+                        const state = args.state?.trim().toLowerCase();
+                        if (state && !STATES.includes(state)) {
+                            return { ok: false, error: { code: 'UNKNOWN_STATE', message: '无效的任务状态筛选。' } };
+                        }
+                        const tasks = await studioJob('/api/tasks', { query: { state } });
+                        return ok({ executor: 'studio', tasks: tasks.slice(0, limit), total: tasks.length,
+                            nextStep: 'Use novel_tasks(action="get", taskId=...) for verified library artifacts and progress.',
+                        });
+                    }
+                    const id = args.taskId?.trim() ?? '';
+                    if (!/^(?:dsh:)?task_[a-f0-9]{16}$/.test(id)) {
+                        return { ok: false, error: { code: 'TASK_ID_REQUIRED', message: '请提供 Studio 返回的 taskId。' } };
+                    }
+                    if (action === 'get')
+                        return ok({ executor: 'studio', task: await studioJob('/api/tasks/' + id) });
+                    if (id.startsWith('dsh:')) {
+                        return { ok: false, error: { code: 'HISTORY_READ_ONLY', message: '已恢复的 DSH 旧任务仅支持查询。' } };
+                    }
+                    return ok({ executor: 'studio', task: await studioJob(`/api/tasks/${id}/${action}`, { method: 'POST' }) });
+                }
                 if (action === 'status') {
                     return ok({ status: runtime.status() });
                 }

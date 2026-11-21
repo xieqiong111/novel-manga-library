@@ -6,6 +6,8 @@ import type { PluginRuntime } from '../runtime.js'
 import { toJson } from '../util/json.js'
 import { PathViolation, UrlViolation } from '../util/paths.js'
 import { RobotsDenied } from '../util/http.js'
+import { SuwayomiError } from '../../server/suwayomi-client.mjs'
+import { studioDelegated } from '../../server/studio-jobs.mjs'
 
 /**
  * Every tool returns a *canonical lossless JSON value* (requirement #4/#12).
@@ -40,6 +42,7 @@ export interface ToolFailure {
 
 /** Map internal errors to stable, agent-readable codes. */
 export function classifyError(error: unknown): ToolFailure {
+  if (error instanceof SuwayomiError) return { code: error.code, message: error.message, retryable: false }
   if (error instanceof DartError) {
     return { code: error.code, message: error.message, retryable: error.retryable }
   }
@@ -76,7 +79,7 @@ export async function runTool(
   fn: () => Promise<unknown>,
 ): Promise<CanonicalValue> {
   try {
-    await runtime.ready()
+    if (!studioDelegated()) await runtime.ready()
     return canonical(await fn())
   } catch (error) {
     const failure = classifyError(error)

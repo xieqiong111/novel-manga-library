@@ -13,7 +13,7 @@
  * All I/O is offline (the fixture source + a compiled Dart headless binary);
  * no third-party website is contacted.
  */
-import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdtemp, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -267,4 +267,58 @@ describe('compliance guards (requirement #10)', () => {
       signal: new AbortController().signal,
     })).resolves.toBeTruthy()
   })
+})
+
+it('routes native novel and manga jobs to Studio, uses its results, and never falls back locally', async () => {
+  const taskId = 'task_0123456789abcdef'
+  const entryId = 'lib_0123456789abcdef'
+  const downloadPath = '/api/library/' + entryId + '/file'
+  const token = 'studio_jobs_' + 'a'.repeat(43)
+  const tokenFile = path.join(dataDir, 'jobs-fixture.token')
+  const taskFiles = await readdir(path.join(dataDir, 'tasks'))
+  await writeFile(tokenFile, token, { mode: 0o600 })
+  vi.stubEnv('LN_STUDIO_TASK_MODE', 'managed')
+  vi.stubEnv('LN_STUDIO_READ_URL', 'http://studio.fixture:8080')
+  vi.stubEnv('LN_STUDIO_JOB_TOKEN_FILE', tokenFile)
+  const request = vi.fn(async (url: URL, init: RequestInit) => {
+    expect(url.origin).toBe('http://studio.fixture:8080')
+    expect(init.headers).toMatchObject({ authorization: 'Bearer ' + token })
+    expect(init.redirect).toBe('error')
+    switch (init.method + ' ' + url.pathname + url.search) {
+      case 'POST /api/tasks':
+        expect(JSON.parse(String(init.body))).toEqual({ bookId: 'fixture:star-voyage', volumes: '1' })
+        return Response.json({ id: taskId, state: 'queued' }, { status: 201 })
+      case 'GET /api/tasks/' + taskId:
+        return Response.json({ id: taskId, state: 'completed', artifacts: [{ id: entryId, downloadPath }] })
+      case 'GET /api/library/' + entryId:
+        return Response.json({ id: entryId, downloadPath, integrity: 'ok' })
+      case 'POST /api/manga/22/komga':
+        expect(JSON.parse(String(init.body))).toEqual({ chapterIds: ['101'] })
+        return Response.json({ queued: ['101'], queue: [], chapterIds: ['101'] })
+      case 'GET /api/manga/downloads?mangaId=22':
+        return Response.json({ queue: [], history: [{ chapterId: '101', archive: { state: 'archived', file: '作品/第1话.cbz' } }] })
+      default: throw new Error('Unexpected request')
+    }
+  })
+  vi.stubGlobal('fetch', request)
+  try {
+    expect(await call('novel_download', { bookId: 'fixture:star-voyage', volumes: '1' }))
+      .toMatchObject({ ok: true, executor: 'studio', taskId })
+    expect(await call('novel_tasks', { action: 'get', taskId }))
+      .toMatchObject({ ok: true, task: { state: 'completed', artifacts: [{ downloadPath }] } })
+    expect(await call('novel_library', { action: 'get', id: entryId }))
+      .toMatchObject({ ok: true, entry: { id: entryId, integrity: 'ok', downloadPath } })
+    expect(await call('manga_download', { mangaId: '22', chapterIds: ['101'] }))
+      .toMatchObject({ ok: true, queued: ['101'] })
+    expect(await call('manga_tasks', { mangaId: '22' }))
+      .toMatchObject({ ok: true, executor: 'studio', history: [{ archive: { file: '作品/第1话.cbz' } }] })
+    vi.stubEnv('LN_STUDIO_JOB_TOKEN_FILE', '')
+    expect(await call('novel_download', { bookId: 'fixture:star-voyage', volumes: '1' }))
+      .toMatchObject({ ok: false, error: { code: 'STUDIO_JOB_UNCONFIGURED', retryable: false } })
+    expect(request).toHaveBeenCalledTimes(5)
+    expect(await readdir(path.join(dataDir, 'tasks'))).toEqual(taskFiles)
+  } finally {
+    vi.unstubAllEnvs()
+    vi.unstubAllGlobals()
+  }
 })

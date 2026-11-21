@@ -43,6 +43,8 @@ Studio 针对飞牛 NAS 与 Linux x86-64 Docker 主机提供部署指南。准�
 | 浏览 Komga、同步目录或请求扫描 | Komga 连接及对应权限。[配置 Komga](docs/KOMGA.md) |
 | Agent 下载、看进度或刮削 | DSH 0.2.2-rc.1 原生插件及对应服务配置。[安装 DSH 插件](docs/DSH-MANGA.md) |
 
+需要让 DSH 与网页共用下载任务和进度时，启用 [Studio 托管模式](docs/DSH-STUDIO-JOBS.md)。
+
 [从零部署 Studio](docs/DEPLOY-NAS.md#4-web-管理台bff--live-前端) · [首次创建管理员](web/README.md#首次创建管理员) · [HTTP API](web/README.md#http-api)
 
 ## 开发

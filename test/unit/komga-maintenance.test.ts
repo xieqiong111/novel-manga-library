@@ -8,7 +8,7 @@ const target = (title: string) => ({ title, summary: '原有简介', summaryLock
 
 function fixture() {
   const records = new Map([
-    ['exact', target('無職轉生')],
+    ['exact', target('無職轉生～到了異世界就拿出真本事～')],
     ['linked', { ...target('已关联'), links: [{ label: 'cbl', url: 'https://bgm.tv/subject/321' }] }],
     ['ambiguity', target('同名作品')],
     ['weak', target('低分作品')],
@@ -28,7 +28,7 @@ function fixture() {
     scanLibrary: vi.fn(async (id) => { events.push('scan:' + id) }),
   }
   const request = vi.fn(async (operation, args) => {
-    const subject = { id: 101, name: '無職転生', nameCn: '无职转生', score: 100 }
+    const subject = { id: 101, name: '無職転生', nameCn: '无职转生 ～到了异世界就拿出真本事～', score: 100 }
     if (operation === 'search') {
       if (args.query === '同名作品') return {
         status: 200, payload: { candidates: [
@@ -97,7 +97,7 @@ describe('Komga dashboard maintenance', () => {
     ])
     expect(client.series.mock.calls.map(([input]) => input.page)).toEqual([0, 1])
     expect(client.patchMetadata).toHaveBeenCalledExactlyOnceWith('series', 'exact', {
-      title: '无职转生', links: [{ label: 'Bangumi', url: 'https://bgm.tv/subject/101' }],
+      title: '无职转生 ～到了异世界就拿出真本事～', links: [{ label: 'Bangumi', url: 'https://bgm.tv/subject/101' }],
     })
     expect(request.mock.calls.every(([, args]) => args.kind === 'manga' && args.scope === 'series')).toBe(true)
     expect(events).toEqual(['exact', 'scan:manga'])

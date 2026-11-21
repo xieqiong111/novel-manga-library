@@ -1,4 +1,5 @@
 import { defineTool } from '@deepseek-ai/dsh-tools';
+import { studioDelegated, studioJob } from '../../server/studio-jobs.mjs';
 import { jsonOutput, ok, runTool } from './common.js';
 /** Step 2 of the closed loop: inspect one book before choosing volumes. */
 export function registerNovelDetails(ctx, runtime) {
@@ -34,7 +35,7 @@ export function registerNovelDetails(ctx, runtime) {
                 if (!args.bookId && !args.url) {
                     return { ok: false, error: { code: 'EMPTY_BOOK_REFERENCE', message: 'Provide bookId or url.' } };
                 }
-                const result = await runtime.novels.details({ bookId: args.bookId, url: args.url, source: args.source }, args.includeVolumes ?? false);
+                const result = studioDelegated() ? await studioJob('/api/novel-catalog', { query: args }) : await runtime.novels.details({ bookId: args.bookId, url: args.url, source: args.source }, args.includeVolumes ?? false);
                 return ok({
                     novel: result.novel,
                     raw: result.raw,

@@ -1,4 +1,5 @@
 import { defineTool } from '@deepseek-ai/dsh-tools';
+import { studioDelegated, studioJob } from '../../server/studio-jobs.mjs';
 import { jsonOutput, ok, runTool } from './common.js';
 /**
  * Requirement #3/#4: multi-source keyword search with alias/author matching and
@@ -37,7 +38,9 @@ export function registerNovelSearch(ctx, runtime) {
         output: jsonOutput(),
         async execute(args) {
             return runTool(runtime, 'novel_search', async () => {
-                const outcome = await runtime.search.search({
+                const outcome = studioDelegated() ? await studioJob('/api/novels', {
+                    query: { ...args, sources: args.sources?.join(',') },
+                }) : await runtime.search.search({
                     query: args.query,
                     sources: args.sources,
                     status: args.status,

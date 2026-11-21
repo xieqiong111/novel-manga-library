@@ -173,17 +173,23 @@ export function createMangaApi(client, logger = { warn() {} },
         return true
       }
       if (method === 'GET' && segments.length === 1 && segments[0] === 'downloads') {
+        const mangaId = params.has('mangaId') ? requiredId(queryParam(params, 'mangaId', { maxLength: 10 }), 'mangaId') : undefined
+        const scopeQueue = (result) => {
+          if (!mangaId) return result
+          const queue = result.queue.filter((task) => task.mangaId === mangaId)
+          return { ...result, queue, count: queue.length }
+        }
         if (!archiveHistory) {
-          sendJson(res, 200, await client.tasks({ action: 'list' }))
+          sendJson(res, 200, scopeQueue(await client.tasks({ action: 'list' })))
           return true
         }
         const before = params.has('before') ? intParam(params, 'before', 1, 1, 10 ** 15 - 1) : undefined
         const limit = intParam(params, 'limit', 50, 1, 100)
         const [upstream, archived] = await Promise.allSettled([
-          client.tasks({ action: 'list' }), archiveHistory.page({ before, limit }),
+          client.tasks({ action: 'list' }), archiveHistory.page({ before, limit, ...(mangaId ? { mangaId } : {}) }),
         ])
         if (upstream.status === 'rejected' && archived.status === 'rejected') throw upstream.reason
-        const result = upstream.status === 'fulfilled' ? upstream.value
+        const result = upstream.status === 'fulfilled' ? scopeQueue(upstream.value)
           : { queue: [], count: 0, queueError: 'Suwayomi 队列暂不可用。' }
         if (archived.status === 'fulfilled') {
           const { history, nextBefore } = archived.value

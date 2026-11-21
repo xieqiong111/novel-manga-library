@@ -15,6 +15,7 @@ import { registerNovelTasks } from './tools/novel-tasks.js'
 import { registerNovelLibrary } from './tools/novel-library.js'
 import { registerBangumiKomga } from './tools/bangumi-komga.js'
 import { registerMangaTools } from './tools/manga.js'
+import { studioDelegated } from '../server/studio-jobs.mjs'
 
 /**
  * DeepSeek Harness / Cordis native plugin.
@@ -50,9 +51,11 @@ export function apply(ctx: Context, config: Config): void {
 
   // Eager, non-blocking initialisation. Tools also await runtime.ready(), so a
   // slow probe never blocks tool registration and a failure is retryable.
-  void runtime.init().catch((error) => {
-    logger.error('plugin', 'init_failed', { error: String(error) })
-  })
+  if (!studioDelegated()) {
+    void runtime.init().catch((error) => {
+      logger.error('plugin', 'init_failed', { error: String(error) })
+    })
+  }
 
   // Native tool registrations are auto-tracked by Cordis and removed on unload.
   registerNovelSearch(ctx, runtime)
@@ -62,7 +65,6 @@ export function apply(ctx: Context, config: Config): void {
   registerNovelTasks(ctx, runtime)
   registerNovelLibrary(ctx, runtime)
 
-  // Manga tools use the same configured Suwayomi client as the web BFF.
   registerMangaTools(ctx, runtime)
   registerBangumiKomga(ctx, runtime)
 
@@ -79,5 +81,6 @@ export function apply(ctx: Context, config: Config): void {
     sources: resolved.enabledSources,
     searchMode: resolved.searchMode,
     offlineOnly: resolved.offlineOnly,
+    executor: studioDelegated() ? 'studio' : 'local',
   })
 }

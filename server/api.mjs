@@ -18,6 +18,8 @@ import { isDshReadRoute } from './integrations.mjs'
 import { createKomgaApi } from './komga-api.mjs'
 import { createBangumiKomga } from './bangumi-komga.mjs'
 import { createKomgaScanner } from './komga-scan.mjs'
+import { createSavedFileHistory, readDshTasks } from './download-history.mjs'
+import { authorizeStudioJob, isStudioJobCredential, studioJobRoute } from './studio-jobs.mjs'
 import { createKomgaMaintenance } from './komga-maintenance.mjs'
 import { rank, resolveBook } from '../dist/search.js'
 import { assertSafePublicUrl } from '../dist/util/paths.js'
@@ -132,6 +134,11 @@ export function createApi(
       : { accepted: false, skipped: true, message: '已跳过自动刷新。' },
   })
   const handleKomgaMaintenance = createKomgaMaintenance({ settings, currentKomga, metadata, scan })
+  const savedFileHistory = createSavedFileHistory(settings, runtime, logger)
+  const dshHistory = () => readDshTasks(settings.novelTaskHistoryDir).catch(() => {
+    logger.warn('downloads', 'dsh_history_unavailable')
+    return []
+  })
   settings.postDownload?.start({ currentKomga, metadata, scan })
   const handleDownloadFolders = createDownloadFoldersApi(settings, currentKomga, scan)
   const handleKomgaApi = createKomgaApi({
@@ -146,14 +153,14 @@ export function createApi(
     process.env.LN_BILINOVEL_SEARCH_URL || process.env.LN_WENKU8_SEARCH_URL,
   )
 
-  async function listNovels(params) {
+  async function listNovels(params, jobsCredential) {
     const query = (params.get('query') ?? '').trim()
     const sources = (params.get('sources') ?? '')
       .split(',')
       .map((item) => item.trim())
       .filter(Boolean)
     const status = params.get('status') ?? 'all'
-    const limit = Math.min(50, Math.max(1, Number(params.get('limit')) || 20))
+    const limit = Math.min(50, Math.max(1, Number(params.get('limit')) || (jobsCredential ? 10 : 20)))
     const statusFilter = status === 'all' ? undefined : status
 
     if (query) {
@@ -164,6 +171,7 @@ export function createApi(
         limit,
         refresh: params.get('refresh') === 'true',
       })
+      if (jobsCredential) return outcome
       return {
         results: outcome.results.map(toNovel),
         total: outcome.total,
@@ -239,26 +247,35 @@ export function createApi(
   }
 
   async function createTask(body) {
-    if (typeof body.bookId !== 'string' || !body.bookId.trim()) {
-      throw new HttpError(400, 'EMPTY_BOOK_REFERENCE', 'bookId is required')
+    const bookId = typeof body.bookId === 'string' ? body.bookId.trim() : ''
+    const url = typeof body.url === 'string' ? body.url.trim() : ''
+    if (!bookId && !url) {
+      throw new HttpError(400, 'EMPTY_BOOK_REFERENCE', 'bookId or url is required')
     }
     if (!runtime.dartAvailable) {
       throw new HttpError(503, 'DART_UNAVAILABLE', 'Dart headless core is unavailable; downloads are disabled')
     }
-    if (!Array.isArray(body.volumes) || body.volumes.length === 0) {
+    const selections = Array.isArray(body.volumes) ? body.volumes : null
+    const legacy = typeof body.volumes === 'string' ? body.volumes.trim() : null
+    if (!selections?.length && !legacy) {
       throw new HttpError(400, 'EMPTY_VOLUMES', 'Select at least one volume')
     }
     const names = Array.isArray(body.volumeNames)
       ? body.volumeNames.map((name) => String(name ?? '').trim()).filter(Boolean)
       : []
-    const selector = volumeSelector(body.volumes, names)
+    const selector = selections ? volumeSelector(selections, names) : legacy
     if (!selector) throw new HttpError(400, 'INVALID_VOLUMES', 'Unrecognised volume ids')
-    if (body.volumes.length > runtime.config.maxVolumesPerTask) {
+    const segments = selector === 'all' ? [] : selector.split(',')
+    if (legacy && segments.some((segment) => !segment.trim() || segment.length > 160 || /[\\/\r\n]|\.\./.test(segment))) {
+      throw new HttpError(400, 'INVALID_VOLUMES', 'Unrecognised volume selector')
+    }
+    if (Math.max(selections?.length ?? 0, names.length, segments.length) > runtime.config.maxVolumesPerTask) {
       throw new HttpError(400, 'TOO_MANY_VOLUMES', `At most ${runtime.config.maxVolumesPerTask} volumes per task`)
     }
 
     const { book, adapter } = resolveBook(runtime.index, runtime.registry, {
-      bookId: body.bookId.trim(),
+      bookId,
+      ...(url ? { url } : {}),
       source: typeof body.source === 'string' ? body.source : undefined,
     })
     if (adapter.info.access === 'restricted') {
@@ -316,6 +333,11 @@ export function createApi(
   /** Returns true when the request was handled as /api/*. */
   return async function handle(req, res, url) {
     if (!url.pathname.startsWith('/api/')) return false
+    const jobsCredential = isStudioJobCredential(req.headers.authorization)
+    if (jobsCredential && !(studioJobRoute(req.method, url.pathname) && await authorizeStudioJob(req.headers.authorization, settings.jobTokenFile))) {
+      sendError(res, 403, 'JOB_AUTH_REQUIRED', '此请求需要有效且有对应权限的 Studio 任务密钥。')
+      return true
+    }
     if (settings.auth && await settings.auth.handle(req, res, url)) return true
     if (req.method === 'GET' && url.pathname === '/api/auth/status') {
       sendJson(res, 200, { enabled: false })
@@ -354,7 +376,7 @@ export function createApi(
       return true
     }
     const tokenAllowed = (!settings.auth || Boolean(settings.token)) && tokenMatches(req, settings.token)
-    if (!dshAllowed && !tokenAllowed && !settings.auth?.sessionAllowed(req)) {
+    if (!jobsCredential && !dshAllowed && !tokenAllowed && !settings.auth?.sessionAllowed(req)) {
       sendError(res, 401, 'UNAUTHORIZED', settings.auth ? '请先登录。' : 'Missing or invalid X-LN-Token')
       return true
     }
@@ -396,7 +418,19 @@ export function createApi(
       }
 
       if (url.pathname === '/api/novels' && method === 'GET') {
-        sendJson(res, 200, await listNovels(url.searchParams))
+        sendJson(res, 200, await listNovels(url.searchParams, jobsCredential))
+        return true
+      }
+      if (url.pathname === '/api/novel-catalog' && method === 'GET') {
+        const reference = {
+          bookId: url.searchParams.get('bookId') || undefined,
+          url: url.searchParams.get('url') || undefined,
+          source: url.searchParams.get('source') || undefined,
+        }
+        if (!reference.bookId && !reference.url) throw new HttpError(400, 'EMPTY_BOOK_REFERENCE', 'bookId or url is required')
+        const result = url.searchParams.get('mode') === 'volumes' ? await runtime.novels.volumes(reference)
+          : await runtime.novels.details(reference, url.searchParams.get('includeVolumes') === 'true')
+        sendJson(res, 200, result)
         return true
       }
       if (segments[1] === 'novels' && segments.length === 3 && method === 'GET') {
@@ -411,12 +445,40 @@ export function createApi(
 
       if (url.pathname === '/api/tasks' && method === 'GET') {
         const state = url.searchParams.get('state')
-        const tasks = runtime.tasks.list({ limit: 200 }).map(toTask)
+        const records = runtime.tasks.list({ limit: 200 })
+        if (state === 'interrupted') {
+          sendJson(res, 200, records.filter((task) => task.state === 'interrupted').map(toTask))
+          return true
+        }
+        const incoming = records.map(toTask)
+        const ids = new Set(incoming.map((task) => task.id))
+        const past = (await dshHistory()).filter((task) => !ids.has(task.id)).map((task) => ({
+          ...toTask({ ...task, id: 'dsh:' + task.id }), origin: 'dsh',
+        }))
+        const tasks = [...incoming, ...past].sort((a, b) => b.updatedTime - a.updatedTime)
         sendJson(res, 200, state ? tasks.filter((task) => task.state === state) : tasks)
+        return true
+      }
+      if (url.pathname === '/api/tasks/files' && method === 'GET') {
+        sendJson(res, 200, await savedFileHistory())
         return true
       }
       if (url.pathname === '/api/tasks' && method === 'POST') {
         sendJson(res, 201, await createTask(await readBody(req)))
+        return true
+      }
+      if (segments[1] === 'tasks' && segments.length === 3 && method === 'GET') {
+        const id = segments[2]
+        const live = id.startsWith('dsh:') ? null : runtime.tasks.get(id)
+        const historical = !live
+        const task = live ?? (await dshHistory()).find((entry) => entry.id === id || 'dsh:' + entry.id === id)
+        if (!task) throw new HttpError(404, 'TASK_NOT_FOUND', 'No matching download task')
+        const entries = historical ? [] : runtime.library.list({ limit: 200 }).filter((entry) => entry.taskId === task.id)
+        sendJson(res, 200, {
+          ...toTask({ ...task, id: historical ? 'dsh:' + task.id : id }), ...(historical ? { origin: 'dsh' } : {}),
+          progress: task.progress, downloadedChapters: task.downloadedChapters, downloadedVolumes: task.downloadedVolumes,
+          artifacts: entries.map(toLibraryItem),
+        })
         return true
       }
       if (segments[1] === 'tasks' && segments.length === 4 && method === 'POST') {
@@ -442,6 +504,11 @@ export function createApi(
         sendJson(res, 200, toLibraryStats(runtime))
         return true
       }
+      if (url.pathname === '/api/library/verify' && method === 'POST') {
+        const results = await runtime.library.verify()
+        sendJson(res, 200, { results, allOk: results.every((entry) => entry.ok), verified: results.length })
+        return true
+      }
       if (segments[1] === 'library' && segments.length === 4 && segments[3] === 'verify' && method === 'POST') {
         const results = await runtime.library.verify(segments[2])
         const result = results[0]
@@ -453,6 +520,12 @@ export function createApi(
           problems: result.problems,
           sha256Changed: result.sha256Changed,
         })
+        return true
+      }
+      if (segments[1] === 'library' && segments.length === 3 && method === 'GET') {
+        const entry = runtime.library.get(segments[2])
+        if (!entry) throw new HttpError(404, 'FILE_NOT_FOUND', 'Unknown library entry')
+        sendJson(res, 200, toLibraryItem(entry))
         return true
       }
       if (segments[1] === 'library' && segments.length === 4 && segments[3] === 'file' && ['GET', 'HEAD'].includes(method)) {

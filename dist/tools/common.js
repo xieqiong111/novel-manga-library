@@ -4,6 +4,8 @@ import { SourceError } from '../sources/registry.js';
 import { toJson } from '../util/json.js';
 import { PathViolation, UrlViolation } from '../util/paths.js';
 import { RobotsDenied } from '../util/http.js';
+import { SuwayomiError } from '../../server/suwayomi-client.mjs';
+import { studioDelegated } from '../../server/studio-jobs.mjs';
 /**
  * Every tool returns a *canonical lossless JSON value* (requirement #4/#12).
  * We declare the root as the annotation-only `json` schema: the DSL compiles it
@@ -27,6 +29,8 @@ export function jsonOutput() {
 }
 /** Map internal errors to stable, agent-readable codes. */
 export function classifyError(error) {
+    if (error instanceof SuwayomiError)
+        return { code: error.code, message: error.message, retryable: false };
     if (error instanceof DartError) {
         return { code: error.code, message: error.message, retryable: error.retryable };
     }
@@ -59,7 +63,8 @@ export function classifyError(error) {
  */
 export async function runTool(runtime, scope, fn) {
     try {
-        await runtime.ready();
+        if (!studioDelegated())
+            await runtime.ready();
         return canonical(await fn());
     }
     catch (error) {

@@ -4,6 +4,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import { safeResolve } from '../util/paths.js'
 import type { LibraryEntry } from '../types.js'
 import type { PluginRuntime } from '../runtime.js'
+import { studioDelegated, studioJob } from '../../server/studio-jobs.mjs'
 import { jsonOutput, ok, runTool } from './common.js'
 
 const ACTIONS = ['list', 'get', 'stats', 'verify', 'checksums', 'remove', 'status'] as const
@@ -25,8 +26,8 @@ export function registerNovelLibrary(ctx: Context, runtime: PluginRuntime) {
   ctx.tools.register(defineTool({
     name: 'novel_library',
     description: [
-      'Browse and verify the local EPUB library produced by completed downloads. Actions: list, get, stats, verify, checksums, remove, status.',
-      'Each entry has id, title, author, volumeNames, chapterCount, bytes, sha256, integrity, createdAt, taskId, relativePath and absolutePath.',
+      'Browse and verify the EPUB library produced by completed downloads. Actions: list, get, stats, verify, checksums, remove, status.',
+      'In managed mode, use the returned downloadPath against the Studio API. The file resides in Studio and removal requires an administrator session.',
       'verify re-checks ZIP/EPUB structure and sha256 sidecars for one entry (id) or the whole library; remove deletes one entry only when confirm=true.',
       'checksums returns the sha256 sidecar lines for external verification; stats aggregates counts, bytes, chapters and integrity.',
     ].join(' '),
@@ -48,6 +49,36 @@ export function registerNovelLibrary(ctx: Context, runtime: PluginRuntime) {
           return { ok: false, error: { code: 'UNKNOWN_ACTION', message: `action must be one of ${ACTIONS.join(', ')}` } }
         }
         const limit = Math.min(Math.max(Math.trunc(args.limit ?? 20), 1), 200)
+        if (studioDelegated()) {
+          if (action === 'remove') return { ok: false, error: {
+            code: 'STUDIO_ADMIN_REQUIRED', message: '删除需要使用 Studio 管理员会话。',
+          } }
+          const id = args.id?.trim()
+          if (id && !/^lib_[a-f0-9]{16}$/.test(id)) return { ok: false, error: { code: 'ID_REQUIRED', message: '请提供 Studio 书库条目 ID。' } }
+          if (action === 'status' || action === 'stats') {
+            return ok({ executor: 'studio', stats: await studioJob('/api/library/stats') })
+          }
+          if (action === 'get') {
+            if (!id) return { ok: false, error: { code: 'ID_REQUIRED', message: '请提供 Studio 书库条目 ID。' } }
+            return ok({ executor: 'studio', entry: await studioJob('/api/library/' + id) })
+          }
+          if (action === 'verify') {
+            const result = await studioJob<Record<string, unknown>>(id ? `/api/library/${id}/verify` : '/api/library/verify', {
+              method: 'POST',
+            })
+            return ok({ ...result, executor: 'studio' })
+          }
+          const entries = await studioJob<Array<{ sha256?: string; fileName: string }>>('/api/library', {
+            query: { query: args.query?.trim() },
+          })
+          if (action === 'checksums') {
+            return ok({ executor: 'studio', checksums: entries.filter((entry) => entry.sha256)
+              .map((entry) => `${entry.sha256}  ${entry.fileName}`) })
+          }
+          return ok({ executor: 'studio', entries: entries.slice(0, limit), total: entries.length,
+            nextStep: 'Use the returned downloadPath against the Studio API for verified EPUBs.',
+          })
+        }
         const status = () => ({
           libraryDir: runtime.config.libraryDir,
           indexFile: path.join(runtime.config.libraryDir, 'index.json'),

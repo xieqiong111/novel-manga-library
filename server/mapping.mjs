@@ -108,6 +108,7 @@ export function toTask(record) {
     size: bytes > 0 ? formatBytes(bytes) : undefined,
     message: record.error?.message,
     updatedAt: relativeTime(record.updatedAt),
+    updatedTime: Date.parse(record.updatedAt) || 0,
     isMock: false,
   }
 }
@@ -130,6 +131,8 @@ export function toLibraryItem(entry) {
     integrity: entry.integrity === 'ok' ? 'passed' : entry.integrity === 'failed' ? 'failed' : 'pending',
     addedAt: relativeTime(entry.createdAt),
     createdAt: entry.createdAt,
+    sha256: entry.sha256,
+    downloadPath: `/api/library/${encodeURIComponent(entry.id)}/file`,
     tags: [entry.sourceId, `${entry.chapterCount} 章`].filter(Boolean),
   }
 }

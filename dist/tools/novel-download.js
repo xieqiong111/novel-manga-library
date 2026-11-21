@@ -1,6 +1,7 @@
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import { resolveBook } from '../search.js';
 import { assertSafePublicUrl } from '../util/paths.js';
+import { studioDelegated, studioJob } from '../../server/studio-jobs.mjs';
 import { jsonOutput, ok, runTool } from './common.js';
 /**
  * Step 4 of the closed loop: enqueue an EPUB download.
@@ -17,6 +18,7 @@ export function registerNovelDownload(ctx, runtime) {
         name: 'novel_download',
         description: [
             'Start a background EPUB download for selected volumes of a light novel and return immediately with a taskId.',
+            'In managed mode Studio owns the job and files. Use the returned taskId and read progress from Studio. Do not start a separate local download.',
             'This is step 4 of the closed loop: novel_search -> novel_details -> novel_volumes -> novel_download.',
             'Pass volumes as "all", 1-based indices like "1,2,5", or comma-separated exact volume names.',
             'Optionally pass volumeNames (the exact names from novel_volumes) for accurate progress reporting.',
@@ -44,6 +46,14 @@ export function registerNovelDownload(ctx, runtime) {
             return runTool(runtime, 'novel_download', async () => {
                 if (!args.bookId && !args.url) {
                     return { ok: false, error: { code: 'EMPTY_BOOK_REFERENCE', message: 'Provide bookId or url.' } };
+                }
+                if (studioDelegated()) {
+                    const task = await studioJob('/api/tasks', {
+                        method: 'POST', body: { ...args, volumes: args.volumes?.trim() || 'all' },
+                    });
+                    return ok({ taskId: task.id, task, queued: true, executor: 'studio',
+                        nextStep: `Use novel_tasks(action="get", taskId="${task.id}") to read Studio progress. Use the returned library artifact after completion.`,
+                    });
                 }
                 const { book, adapter } = resolveBook(runtime.index, runtime.registry, {
                     bookId: args.bookId,

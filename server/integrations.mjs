@@ -31,7 +31,7 @@ const validBangumiToken = (value) => value === undefined || (typeof value === 's
 
 export function isDshReadRoute(method, pathname) {
   return method === 'GET' && (
-    ['/api/health', '/api/library', '/api/library/stats', '/api/tasks',
+    ['/api/health', '/api/library', '/api/library/stats', '/api/tasks', '/api/tasks/files',
       '/api/komga/status', '/api/komga/libraries', '/api/komga/series',
       '/api/manga/downloads', '/api/manga/library', '/api/manga/sources', '/api/manga/health'].includes(pathname)
     || /^\/api\/manga\/[1-9]\d{0,9}\/komga$/.test(pathname)

@@ -4,6 +4,7 @@ import path from 'node:path'
 import { expect, it, vi } from 'vitest'
 import { openStudioAuth } from '../../server/auth.mjs'
 import { createApi } from '../../server/api.mjs'
+import { studioJobRoute } from '../../server/studio-jobs.mjs'
 
 it('protects initial setup, persists sessions, enforces expiry and revokes logout', async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), 'studio-auth-'))
@@ -184,5 +185,34 @@ it('scopes the DSH credential and never returns stored secrets', async () => {
   } finally {
     auth.close()
     await rm(dataDir, { recursive: true, force: true })
+  }
+})
+
+it('accepts the separate Studio jobs key for job routes only', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'studio-jobs-'))
+  const token = 'studio_jobs_' + 'a'.repeat(43)
+  const jobTokenFile = path.join(dir, 'jobs.token')
+  try {
+    await writeFile(jobTokenFile, token, { mode: 0o600 })
+    const api = createApi({ dartAvailable: true, tasks: { list: () => [] } }, { jobTokenFile },
+      { warn() {} })
+    async function request(method: string, route: string, credential = token) {
+      let status = 0
+      await api({
+        method, headers: { authorization: 'Bearer ' + credential, 'content-type': 'application/json' },
+        async *[Symbol.asyncIterator]() { yield Buffer.from('{}') },
+      }, { writeHead(code: number) { status = code }, end() {} }, new URL(route, 'http://studio.example'))
+      return status
+    }
+    expect(await request('GET', '/api/tasks')).toBe(200)
+    expect(await request('POST', '/api/tasks')).toBe(400)
+    expect(await request('GET', '/api/settings/integrations')).toBe(403)
+    expect(await request('POST', '/api/auth/setup')).toBe(403)
+    expect(await request('DELETE', '/api/library/lib_0123456789abcdef')).toBe(403)
+    expect(await request('GET', '/api/tasks', token.slice(0, -1) + 'x')).toBe(403)
+    expect(studioJobRoute('GET', '/api/library/lib_0123456789abcdef/file')).toBe(true)
+    expect(studioJobRoute('POST', '/api/manga/22/komga')).toBe(true)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
   }
 })

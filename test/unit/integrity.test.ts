@@ -1,10 +1,11 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { readZipEntries, readZipEntry, verifyEpub } from '../../src/core/integrity.js'
 import { createHash } from 'node:crypto'
 import { deflateRawSync } from 'node:zlib'
+import { createSavedFileHistory, readDshTasks } from '../../server/download-history.mjs'
 
 let dir: string
 beforeEach(async () => { dir = await mkdtemp(path.join(os.tmpdir(), 'ln-epub-')) })
@@ -110,6 +111,37 @@ describe('ZIP reader', () => {
   it('rejects non-ZIP input', () => {
     expect(() => readZipEntries(Buffer.from('not a zip'))).toThrow(/Not a ZIP/)
   })
+})
+
+it('recovers only saved EPUB/CBZ files and canonical completed DSH records', async () => {
+  const novel = path.join(dir, 'novel')
+  const manga = path.join(dir, 'manga')
+  const legacy = path.join(dir, 'legacy')
+  await Promise.all([mkdir(novel), mkdir(manga), mkdir(legacy)])
+  await mkdir(path.join(manga, '作品'))
+  const cbz = zip([{ name: '001.webp', data: Buffer.from('fixture image bytes') }])
+  const validCbz = path.join(manga, '作品', '第1话.cbz')
+  const goodId = 'task_aaaaaaaaaaaaaaaa'
+  const pendingId = 'task_bbbbbbbbbbbbbbbb'
+  const record = { id: goodId, state: 'completed', updatedAt: '2025-01-01T00:00:00Z',
+    request: { title: '作品' }, artifacts: [{ path: '/fixture/private-epub', bytes: 123 }] }
+  await Promise.all([
+    writeFile(validCbz, cbz),
+    writeFile(path.join(manga, '作品', '未完成.cbz'), 'temporary download'),
+    writeFile(path.join(manga, '作品', '.第3话.cbz'), cbz),
+    writeFile(path.join(novel, '旧书.epub'), validEpub()),
+    writeFile(path.join(novel, '已入库.epub'), validEpub()),
+    writeFile(path.join(legacy, goodId + '.json'), JSON.stringify(record)),
+    writeFile(path.join(legacy, pendingId + '.json'), JSON.stringify({ ...record, id: pendingId, state: 'running' })),
+  ])
+  await symlink(validCbz, path.join(manga, '作品', '链接.cbz'))
+  const files = createSavedFileHistory({ config: { novelStorageRoot: novel }, mangaStorageRoot: manga },
+    { library: { list: () => [{ storageFolder: '', relativePath: '已入库.epub' }] } }, { warn() {} })
+  expect(await files()).toEqual({ errors: [], files: [
+    expect.objectContaining({ type: 'novel', title: '旧书', files: [expect.objectContaining({ path: '旧书.epub' })] }),
+    expect.objectContaining({ type: 'manga', title: '作品', files: [{ path: '作品/第1话.cbz', bytes: cbz.length }] }),
+  ] })
+  expect(await readDshTasks(legacy)).toEqual([expect.objectContaining({ id: goodId, artifacts: [{ bytes: 123 }] })])
 })
 
 describe('verifyEpub() (requirement #9)', () => {

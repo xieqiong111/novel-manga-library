@@ -1,4 +1,5 @@
 import { defineTool } from '@deepseek-ai/dsh-tools';
+import { studioDelegated, studioJob } from '../../server/studio-jobs.mjs';
 import { jsonOutput, ok, runTool } from './common.js';
 /** Step 3 of the closed loop: list volumes + chapters so the agent can choose. */
 export function registerNovelVolumes(ctx, runtime) {
@@ -24,7 +25,9 @@ export function registerNovelVolumes(ctx, runtime) {
                 if (!args.bookId && !args.url) {
                     return { ok: false, error: { code: 'EMPTY_BOOK_REFERENCE', message: 'Provide bookId or url.' } };
                 }
-                const result = await runtime.novels.volumes({ bookId: args.bookId, url: args.url, source: args.source });
+                const result = studioDelegated() ? await studioJob('/api/novel-catalog', {
+                    query: { ...args, mode: 'volumes' },
+                }) : await runtime.novels.volumes({ bookId: args.bookId, url: args.url, source: args.source });
                 const volumes = (args.includeChapters ?? true)
                     ? result.volumes
                     : result.volumes.map(({ index, name, cover, chapterCount }) => ({ index, name, cover, chapterCount }));
