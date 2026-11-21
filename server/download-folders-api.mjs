@@ -1,5 +1,5 @@
 import { constants } from 'node:fs'
-import { access, chmod, mkdir, readdir } from 'node:fs/promises'
+import { access, chmod, lstat, mkdir, readdir } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { folderWithin, readDownloadFolders, validSubfolder } from '../dist/core/download-folders.js'
@@ -8,6 +8,8 @@ import { KomgaError } from './komga-client.mjs'
 import { createKomgaScanner } from './komga-scan.mjs'
 
 const base = '/api/settings/download-folders'
+const legacyMangaSeriesName = / \[-?\d+-\d+\]$/
+const mangaSeriesMarker = '.studio-series.json'
 const kindValid = (kind) => kind === 'novel' || kind === 'manga'
 
 class FolderError extends Error {
@@ -83,22 +85,42 @@ export function createDownloadFoldersApi(settings, getKomga, scan = createKomgaS
     return roots[kind]
   }
 
-  async function writable(kind, folder) {
-    const destination = await folderWithin(requireMount(kind), folder)
-    await access(destination, constants.W_OK | constants.X_OK)
-    if (kind === 'manga' && / \[-?\d+-\d+\]$/.test(path.basename(destination))) {
-      throw Error('A manga series folder cannot be a storage root')
+  async function isMangaSeries(directory) {
+    if (legacyMangaSeriesName.test(path.basename(directory))) return true
+    try {
+      await lstat(path.join(directory, mangaSeriesMarker))
+      return true
+    } catch (error) {
+      if (error.code === 'ENOENT') return false
+      throw error
     }
   }
 
+  async function storageFolder(kind, folder) {
+    const destination = await folderWithin(requireMount(kind), folder)
+    if (kind === 'manga') {
+      let current = destination
+      const depth = folder ? folder.split('/').length : 0
+      for (let level = 0; level <= depth; level++) {
+        if (await isMangaSeries(current)) throw Error('A manga series folder cannot be a storage root')
+        current = path.dirname(current)
+      }
+    }
+    return destination
+  }
+
+  async function writable(kind, folder) {
+    await access(await storageFolder(kind, folder), constants.W_OK | constants.X_OK)
+  }
+
   async function saveFolder(kind, folder, create = false) {
-    const root = requireMount(kind)
+    requireMount(kind)
     const reset = kind === 'novel' && folder === null && create === false
     if (typeof create !== 'boolean' || (!reset && !validSubfolder(folder))) throw Error('Invalid target')
     const save = pending.then(async () => {
       if (folder !== null) {
         if (create && folder) {
-          const parent = await folderWithin(root, folder.split('/').slice(0, -1).join('/'))
+          const parent = await storageFolder(kind, folder.split('/').slice(0, -1).join('/'))
           const target = path.join(parent, path.posix.basename(folder))
           await mkdir(target, { mode: 0o700 })
           await chmod(target, 0o700)
@@ -144,11 +166,13 @@ export function createDownloadFoldersApi(settings, getKomga, scan = createKomgaS
       else if (req.method === 'GET' && url.pathname === base + '/browse') {
         const folder = url.searchParams.get('folder') ?? ''
         const kind = url.searchParams.get('kind')
-        const dir = await folderWithin(requireMount(kind), folder)
-        const entries = (await readdir(dir, { withFileTypes: true }))
-          .filter((entry) => entry.isDirectory() && validSubfolder(entry.name) && !(kind === 'manga' && / \[-?\d+-\d+\]$/.test(entry.name)))
-          .map((entry) => entry.name)
-          .sort((a, b) => a.localeCompare(b, 'zh-CN', { numeric: true }))
+        const dir = await storageFolder(kind, folder)
+        const names = (await readdir(dir, { withFileTypes: true }))
+          .filter((entry) => entry.isDirectory() && validSubfolder(entry.name)).map((entry) => entry.name)
+        const entries = kind === 'manga' ? (await Promise.all(names.map(async (name) =>
+          await isMangaSeries(path.join(dir, name)) ? null : name,
+        ))).filter(Boolean) : names
+        entries.sort((a, b) => a.localeCompare(b, 'zh-CN', { numeric: true }))
         reply(res, 200, { folder, entries })
       } else if (req.method === 'POST' && url.pathname === base) {
         const { kind, folder, create } = await readBody(req)

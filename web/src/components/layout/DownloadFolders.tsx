@@ -23,7 +23,7 @@ export function DownloadFolders() {
   return (
     <Card className="p-5">
       <SectionTitle title="NAS 保存目录" />
-      <p className="mb-4 mt-2 text-xs text-ink-soft">选择轻小说 EPUB 和漫画 CBZ 的保存位置。旧文件仍可从原位置访问。</p>
+      <p className="mb-4 mt-2 text-xs text-ink-soft">选择轻小说 EPUB 和漫画 CBZ 的保存位置。漫画按作品名称建文件夹，CBZ 直接放在作品文件夹内。</p>
       {catalog.loading && !catalog.data && <p role="status"><Spinner /> 读取保存目录…</p>}
       {catalog.error && <p role="alert" className="text-sm text-negative">{catalog.error}</p>}
       {catalog.data && <div className="grid gap-4 md:grid-cols-2">

@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, symlink } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { expect, it, vi } from 'vitest'
@@ -18,6 +18,10 @@ it('persists an authorized library path and reports the real scan acceptance sep
   const mount = path.join(root, 'manga')
   await mkdir(path.join(mount, '收藏'), { recursive: true })
   await mkdir(path.join(mount, '其他'))
+  const series = path.join(mount, '无职转生')
+  await mkdir(path.join(series, '附录'), { recursive: true })
+  await writeFile(path.join(series, '.studio-series.json'), '{"sourceId":99,"mangaId":3482}')
+  await mkdir(path.join(mount, '旧作 [99-10]'))
   await symlink(root, path.join(mount, 'outside'))
   const fetchImpl = vi.fn(async (input: string, _init?: RequestInit) => {
     if (input.endsWith('/api/v1/libraries')) return Response.json([
@@ -56,6 +60,9 @@ it('persists an authorized library path and reports the real scan acceptance sep
   }
   try {
     expect((await call('GET', '/browse?kind=manga')).body.entries).toEqual(['其他', '收藏'])
+    expect((await call('POST', '', { kind: 'manga', folder: '无职转生' })).status).toBe(400)
+    expect((await call('POST', '', { kind: 'manga', folder: '无职转生/附录' })).status).toBe(400)
+    expect((await call('POST', '', { kind: 'manga', folder: '无职转生/新目录', create: true })).status).toBe(400)
     expect((await call('GET', '/komga?kind=manga', undefined, false)).status).toBe(403)
     expect((await call('GET', '/komga?kind=manga')).body.libraries).toEqual([
       { id: 'manga', name: '漫画', selectable: true, folder: '收藏' },

@@ -274,7 +274,7 @@ function KomgaDownload({ id, revision }: { id: string; revision: number }) {
       {catalog.loading && !catalog.data ? <p role="status" className="mt-2 text-xs text-ink-soft"><Spinner /> 读取分卷…</p>
         : catalog.error ? <MangaNotice message={catalog.error} />
         : !catalog.data?.available ? <p className="mt-2 text-xs text-ink-soft">此 Studio 尚未连接 Komga 归档服务。</p>
-        : !volume ? <p className="mt-2 text-xs text-ink-soft">该来源没有可识别的分卷，可在下方下载单话。</p>
+        : !volume ? <p className="mt-2 text-xs text-ink-soft">该来源没有可识别的分卷，可在下方下载单话。带话号的章节下载后会各自打成 CBZ。</p>
         : (
           <>
             <div className="mt-3 flex flex-wrap items-center gap-2">

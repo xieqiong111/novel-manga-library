@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Export completed Suwayomi volumes to CBZ using the native archive API."""
+"""Export completed Suwayomi volumes or individually numbered chapters to CBZ."""
 
 import argparse
 import base64
@@ -37,8 +37,10 @@ CHAPTER_LABEL = re.compile(
     r"^(?:第\s*(?P<cjk>\d+(?:\.\d+)?)\s*[话話章节節回]|ch(?:apter)?\.?\s*(?P<en>\d+(?:\.\d+)?))",
     re.I,
 )
+BARE_CHAPTER = re.compile(r"^(?P<number>[0-9]{1,4}(?:\.[0-9]{1,4})?)(?=$|[\s话話章节節回:：、._—-])")
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif", ".bmp", ".jxl"}
 DIGITS = str.maketrans("０１２３４５６７８９", "0123456789")
+SERIES_MARKER = ".studio-series.json"
 PAGE_SIZE = 100
 CHAPTER_FIELDS = "id name isDownloaded pageCount"
 ARCHIVE_LIMIT = 2 * 1024**3
@@ -198,28 +200,98 @@ def complete_volumes(chapters):
             yield volume, selected
 
 
+def chapter_number(name):
+    name = name.translate(DIGITS).strip()
+    labelled = CHAPTER_LABEL.match(name)
+    if labelled:
+        number = labelled["cjk"] or labelled["en"]
+    else:
+        bare = BARE_CHAPTER.match(name)
+        number = bare["number"] if bare else None
+    if number is None or not re.fullmatch(r"\d{1,4}(?:\.\d{1,4})?", number):
+        return None
+    return format(Decimal(number).normalize(), "f")
+
+
+def chapter_archives(chapters):
+    # A source with volume labels stays in volume mode to avoid duplicate Komga books.
+    if any(VOLUME.match(row["name"].translate(DIGITS)) for row in chapters):
+        return
+    for row in chapters:
+        number = chapter_number(row["name"]) if row["isDownloaded"] is True else None
+        if number is None:
+            continue
+        whole, dot, fraction = number.partition(".")
+        filename = f"第{whole.zfill(3)}{dot}{fraction}话 [{int(row['id'])}].cbz"
+        yield filename, row["name"], number, [row]
+
+
 def natural_key(value):
     return [int(part) if part.isdigit() else part.casefold() for part in re.split(r"(\d+)", value, flags=re.ASCII)]
 
 
+def series_identity(manga):
+    return {"sourceId": int(manga["sourceId"]), "mangaId": int(manga["id"])}
+
+
+def series_title(manga):
+    title = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", manga["title"]).strip(" .")
+    return title.encode()[:160].decode(errors="ignore").rstrip(" .") or "漫画"
+
+
+def read_series_marker(folder):
+    marker = folder / SERIES_MARKER
+    if marker.is_symlink() or not marker.is_file():
+        return None
+    try:
+        with marker.open("rb") as handle:
+            return json.loads(handle.read(1024))
+    except (FileNotFoundError, UnicodeError, ValueError):
+        return None
+
+
 def series_directory(root, manga):
-    manga_id = int(manga["id"])
-    source_id = int(manga["sourceId"])
-    suffix = f" [{source_id}-{manga_id}]"
-    matches = [entry for entry in root.iterdir() if entry.name.endswith(suffix) and entry.is_dir()]
-    if len(matches) > 1 or any(entry.is_symlink() for entry in matches):
-        raise ArchiveError(f"ambiguous archive directory for manga {manga_id}")
+    identity = series_identity(manga)
+    suffix = f" [{identity['sourceId']}-{identity['mangaId']}]"
+    matches = []
+    for entry in root.iterdir():
+        legacy = entry.name.endswith(suffix)
+        if entry.is_symlink():
+            if legacy:
+                raise ArchiveError(f"invalid archive directory for manga {identity['mangaId']}")
+            continue
+        if entry.is_dir() and (legacy or read_series_marker(entry) == identity):
+            matches.append(entry)
+    if len(matches) > 1:
+        raise ArchiveError(f"ambiguous archive directory for manga {identity['mangaId']}")
     if matches:
         return matches[0]
-    title = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", manga["title"]).strip(" .")
-    title = title.encode()[:160].decode(errors="ignore") or "漫画"
-    return root / (title + suffix)
+    title = series_title(manga)
+    plain = root / title
+    return root / (title + suffix) if plain.exists() or plain.is_symlink() else plain
 
 
-def comic_info(manga, volume, page_count):
+def prepare_series_folder(folder, manga):
+    try:
+        folder.mkdir(mode=0o700)
+        folder.chmod(0o700)
+    except FileExistsError:
+        if folder.is_symlink() or not folder.is_dir():
+            raise ArchiveError("invalid manga destination folder")
+    marker = folder / SERIES_MARKER
+    identity = series_identity(manga)
+    try:
+        with marker.open("x", encoding="utf-8") as handle:
+            json.dump(identity, handle)
+    except FileExistsError:
+        if read_series_marker(folder) != identity:
+            raise ArchiveError("existing folder belongs to a different series")
+
+
+def comic_info(manga, title, number, page_count):
     info = ElementTree.Element("ComicInfo")
-    for tag, value in [("Series", manga["title"]), ("Title", f"第{volume:02}卷"),
-                       ("Number", str(volume)), ("PageCount", str(page_count))]:
+    for tag, value in [("Series", manga["title"]), ("Title", title),
+                       ("Number", number), ("PageCount", str(page_count))]:
         ElementTree.SubElement(info, tag).text = value
     return ElementTree.tostring(info, encoding="utf-8", xml_declaration=True)
 
@@ -277,14 +349,16 @@ def storage_roots(root, settings):
     return current, previous
 
 
-def volume_path(root, previous, manga, number):
-    filename = f"第{number:02}卷.cbz"
-    target = series_directory(root, manga) / filename
-    for parent in [root, *previous]:
-        existing = series_directory(parent, manga) / filename
+def archive_directories(root, previous, manga):
+    return [series_directory(parent, manga) for parent in (root, *previous)]
+
+
+def archive_path(directories, filename):
+    for folder in directories:
+        existing = folder / filename
         if existing.exists() or existing.is_symlink():
             return existing
-    return target
+    return directories[0] / filename
 
 
 def volume_catalog(client, root, manga_id, previous=()):
@@ -295,9 +369,10 @@ def volume_catalog(client, root, manga_id, previous=()):
     if len(chapters) > 5000:
         raise ArchiveError("chapter catalog exceeds lookup limit")
     volumes = []
+    directories = archive_directories(root, previous, manga)
     for number, selected in planned_volumes(chapters):
         filename = f"第{number:02}卷.cbz"
-        destination = volume_path(root, previous, manga, number)
+        destination = archive_path(directories, filename)
         archived = False
         if destination.is_file() and not destination.is_symlink():
             try:
@@ -350,8 +425,15 @@ def start_status_server(client, root, port, settings=None):
     return server
 
 
-def archive_volume(client, root, manga, volume, chapters, previous=()):
-    destination = volume_path(root, previous, manga, volume)
+def archive_volume(client, root, manga, volume, chapters, previous=(), directories=None):
+    title = f"第{volume:02}卷"
+    if directories is None:
+        directories = archive_directories(root, previous, manga)
+    return write_cbz(client, root, manga, title + ".cbz", title, str(volume), chapters, directories)
+
+
+def write_cbz(client, root, manga, filename, title, number, chapters, directories):
+    destination = archive_path(directories, filename)
     folder = destination.parent
     signature = archive_signature(chapters)
     if len(signature) > 65535:
@@ -378,17 +460,12 @@ def archive_volume(client, root, manga, volume, chapters, previous=()):
                 page_count = 0
                 for chapter in chapters:
                     page_count += add_chapter_pages(client, output, chapter, page_count + 1)
-                output.writestr("ComicInfo.xml", comic_info(manga, volume, page_count))
+                output.writestr("ComicInfo.xml", comic_info(manga, title, number, page_count))
                 output.comment = signature
             temporary.flush()
             os.fsync(temporary.fileno())
             staging.chmod(0o600)
-            try:
-                folder.mkdir(mode=0o700)
-                # Some NAS filesystems apply inherited ACLs instead of the mkdir mode.
-                folder.chmod(0o700)
-            except FileExistsError:
-                pass
+            prepare_series_folder(folder, manga)
             os.replace(staging, destination)
         finally:
             staging.unlink(missing_ok=True)
@@ -403,12 +480,19 @@ def run_once(client, root, previous=()):
     for manga_id, manga in mangas.items():
         try:
             chapters = list(client.manga_chapters(manga_id))
+            directories = archive_directories(root, previous, manga)
             for volume, selected in complete_volumes(chapters):
                 try:
-                    exported += archive_volume(client, root, manga, volume, selected, previous)
+                    exported += archive_volume(client, root, manga, volume, selected, directories=directories)
                 except (ArchiveError, OSError, BadZipFile, RuntimeError) as exc:
                     failures += 1
                     logging.error("manga %s volume %s: %s", manga_id, volume, exc)
+            for filename, title, number, selected in chapter_archives(chapters):
+                try:
+                    exported += write_cbz(client, root, manga, filename, title, number, selected, directories)
+                except (ArchiveError, OSError, BadZipFile, RuntimeError) as exc:
+                    failures += 1
+                    logging.error("manga %s chapter %s: %s", manga_id, selected[0]["id"], exc)
         except (ArchiveError, KeyError, TypeError, ValueError) as exc:
             failures += 1
             logging.error("manga %s: %s", manga_id, exc)
@@ -428,7 +512,7 @@ def log_download_progress(client, interval):
                 if current[task["chapterId"]] != previous.get(task["chapterId"]):
                     logging.info("download %s", json.dumps(task, ensure_ascii=False))
             for chapter_id in previous.keys() - current.keys():
-                logging.info("chapter %s left Suwayomi queue; see volume status for CBZ confirmation", chapter_id)
+                logging.info("chapter %s left Suwayomi queue; check the archive output for CBZ confirmation", chapter_id)
             if unavailable:
                 logging.info("Suwayomi download queue is reachable again")
             previous = current

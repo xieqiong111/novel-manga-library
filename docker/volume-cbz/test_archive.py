@@ -6,7 +6,10 @@ from unittest.mock import patch
 from xml.etree import ElementTree
 from zipfile import BadZipFile, ZipFile
 
-from archive import ArchiveError, Suwayomi, archive_volume, complete_volumes, storage_roots, volume_catalog, volume_label
+from archive import (
+    ArchiveError, Suwayomi, archive_volume, complete_volumes, run_once,
+    series_directory, storage_roots, volume_catalog, volume_label,
+)
 
 
 def chapter(chapter_id, name, downloaded=True, page_count=3):
@@ -58,13 +61,65 @@ class VolumeArchiveTests(unittest.TestCase):
             self.assertTrue(archive_volume(client, root, b, 2, chapters))
             self.assertEqual(client.calls, [3, 4, 3, 4])
             self.assertEqual(len(list(root.glob("*/*.cbz"))), 2)
-            with ZipFile(root / "試_作 [99-17]" / "第02卷.cbz") as archive:
+            self.assertTrue((root / "試_作 [100-18]" / "第02卷.cbz").is_file())
+            with ZipFile(root / "試_作" / "第02卷.cbz") as archive:
                 self.assertIsNone(archive.testzip())
                 self.assertEqual([archive.read(f"{i:06}.jpg") for i in range(1, 7)],
                                  [bytes([ch, i]) for ch in (3, 4) for i in (1, 2, 10)])
                 xml = ElementTree.fromstring(archive.read("ComicInfo.xml"))
                 self.assertEqual(xml.findtext("Number"), "2")
                 self.assertEqual(xml.findtext("PageCount"), "6")
+
+    def test_chapters_export_directly_to_the_selected_folder_with_stable_names(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            selected = root / "用户选择"
+            selected.mkdir()
+            client = FakeSuwayomi()
+            manga = {"id": 3482, "sourceId": "99", "title": "无职转生"}
+            rows = [
+                chapter(5, "1 难不成是：异世界"),
+                chapter(6, "第１.５話 幕间"),
+                chapter(7, "第１.５話 幕间（另一版本）"),
+                chapter(8, "第2话", downloaded=False),
+                chapter(9, "预告"),
+            ]
+            with patch.object(client, "downloaded_mangas", return_value={3482: manga}, create=True), patch.object(
+                client, "manga_chapters", return_value=rows, create=True
+            ):
+                self.assertEqual(run_once(client, selected), 0)
+                self.assertEqual(run_once(client, selected), 0)
+            series = selected / "无职转生"
+            self.assertEqual(sorted(file.name for file in series.glob("*.cbz")), [
+                "第001.5话 [6].cbz", "第001.5话 [7].cbz", "第001话 [5].cbz",
+            ])
+            self.assertEqual(client.calls, [5, 6, 7])
+            with ZipFile(series / "第001.5话 [6].cbz") as archive:
+                self.assertIsNone(archive.testzip())
+                info = ElementTree.fromstring(archive.read("ComicInfo.xml"))
+                self.assertEqual(info.findtext("Series"), "无职转生")
+                self.assertEqual(info.findtext("Title"), "第１.５話 幕间")
+                self.assertEqual(info.findtext("Number"), "1.5")
+            self.assertEqual(series_directory(selected, {**manga, "title": "新名字"}), series)
+
+    def test_legacy_folders_and_existing_unmanaged_series_are_not_mixed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manga = {"id": 17, "sourceId": "99", "title": "試作"}
+            unmanaged = root / "試作"
+            unmanaged.mkdir()
+            (unmanaged / "existing.txt").touch()
+            client = FakeSuwayomi()
+            chapters = [chapter(5, "第1卷"), chapter(6, "第1话")]
+            with patch.object(client, "downloaded_mangas", return_value={17: manga}, create=True), patch.object(
+                client, "manga_chapters", return_value=chapters, create=True
+            ):
+                self.assertEqual(run_once(client, root), 0)
+            self.assertEqual(client.calls, [5])
+            self.assertEqual([file.name for file in unmanaged.iterdir()], ["existing.txt"])
+            legacy = root / "試作 [99-17]"
+            self.assertTrue((legacy / "第01卷.cbz").is_file())
+            self.assertEqual(series_directory(root, {**manga, "title": "別名"}), legacy)
 
     def test_catalog_reports_written_cbz_and_groups_missing_chapters(self):
         with tempfile.TemporaryDirectory() as directory:
