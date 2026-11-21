@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { createApi } from '../../server/api.mjs'
 import { createBangumiKomga } from '../../server/bangumi-komga.mjs'
 import { createKomgaClient } from '../../server/komga-client.mjs'
+import { defaultScrapeOptions } from '../../server/scrape-options.mjs'
 
 const subject = { id: 123, name: 'テスト', nameCn: '测试作品' }
 const seriesInput = { kind: 'manga', scope: 'series', seriesId: 'series-a', subjectId: subject.id }
@@ -17,6 +18,8 @@ function fixture() {
   const book = {
     title: '第 1 卷', number: '1', numberSort: 1, summary: '', authors: [{ name: '译者', role: 'translator' }],
   }
+  const posters: string[] = []
+  const upload = vi.fn()
   const patchSeries = vi.fn()
   const patchBook = vi.fn()
   const scan = vi.fn(() => new Response(null, { status: 202 }))
@@ -33,6 +36,12 @@ function fixture() {
       if (url.endsWith('/books/book-a/metadata') && init.method === 'PATCH') {
         patchBook(JSON.parse(String(init.body)))
         return new Response(null, { status: 204 })
+      }
+      if (/\/(series-a|book-a)\/thumbnails$/.test(url)) return Response.json(posters.map((type) => ({ type })))
+      if (/\/(series-a|book-a)\/thumbnails\?selected=true$/.test(url) && init.method === 'POST') {
+        const image = (init.body as FormData).get('file') as File
+        upload(url, image.type, image.size)
+        return Response.json({ id: 'poster-a', type: 'USER_UPLOADED', selected: true })
       }
       if (url.includes('/books/list?') && init.method === 'POST') {
         expect(JSON.parse(String(init.body)).condition.allOf[0]).toEqual({ seriesId: { operator: 'is', value: 'series-a' } })
@@ -55,7 +64,7 @@ function fixture() {
     return Response.json({ subject, metadata, source: 'bangumi-archive', archiveVersion: '2026-11-17T21:04:20Z' })
   })
   const run = createBangumiKomga({ url: 'http://bangumikomga:8091', komga: () => komga, fetchImpl: adapterFetch })
-  return { run, state, adapterFetch, patchSeries, patchBook, komga, scan }
+  return { run, state, adapterFetch, patchSeries, patchBook, komga, scan, posters, upload }
 }
 
 describe('BangumiKomga metadata', () => {
@@ -104,6 +113,88 @@ describe('BangumiKomga metadata', () => {
     adapterFetch.mockRejectedValueOnce(new Error('connection failed'))
     await expect(run('search', { ...seriesInput, query: '测试' })).rejects.toMatchObject({ code: 'BANGUMIKOMGA_UNAVAILABLE' })
     expect(patchSeries).not.toHaveBeenCalled()
+  })
+
+  it('filters candidates and enforces library types, locked metadata and a fresh preview', async () => {
+    const { komga, patchSeries, state } = fixture()
+    Object.assign(state, { titleSort: '保持排序', titleSortLock: true, genres: ['冒险'] })
+    let options = { ...defaultScrapeOptions, minimumScore: 80, sortTitle: true, addLocalVersion: true,
+      libraries: [{ id: 'library-a', kind: 'manga' }] }
+    const requestMetadata = vi.fn(async (action, params) => ({ status: 200, payload: action === 'search'
+      ? { candidates: [{ ...subject, score: 79 }, { ...subject, id: 124, score: 80 }, { ...subject, id: 125 }] }
+      : { subject, metadata: { titleSort: 'C系列', localVersion: '东立' }, params } }))
+    const run = createBangumiKomga({ komga: () => komga, getOptions: () => options, requestMetadata })
+    expect(await run('search', { ...seriesInput, query: '测试' })).toMatchObject({ candidates: [{ id: 124, score: 80 }] })
+    await expect(run('preview', { ...seriesInput, kind: 'novel' })).rejects.toMatchObject({ code: 'SCRAPE_LIBRARY_EXCLUDED' })
+    expect(requestMetadata).toHaveBeenCalledTimes(1)
+    const preview = await run('preview', seriesInput)
+    expect(requestMetadata).toHaveBeenLastCalledWith('metadata', {
+      kind: 'manga', scope: 'series', subjectId: 123, sortTitle: true, addLocalVersion: true, localName: '系列',
+    })
+    expect(preview.changes).not.toHaveProperty('titleSort')
+    expect(preview.changes.genres).toEqual({ before: ['冒险'], after: ['冒险', '东立'] })
+    options = { ...options, minimumScore: 81 }
+    await expect(run('apply', { previewId: preview.previewId })).rejects.toMatchObject({ code: 'SCRAPE_OPTIONS_CHANGED' })
+    expect(patchSeries).not.toHaveBeenCalled()
+    Object.assign(state, { titleSortLock: false })
+    const renewed = await run('preview', seriesInput)
+    await run('apply', { previewId: renewed.previewId })
+    expect(patchSeries).toHaveBeenCalledWith(expect.objectContaining({ titleSort: 'C系列', genres: ['冒险', '东立'] }))
+  })
+
+  it('adds covers only after confirmation and preserves existing uploaded posters', async () => {
+    const { komga, posters, upload, state, patchSeries, patchBook } = fixture()
+    const coverUrl = 'https://lain.bgm.tv/pic/cover/l/ab/cd/123_a1b2c.jpg'
+    const options = { ...defaultScrapeOptions, seriesCover: true, bookCover: true }
+    let source = 'bangumi-live'
+    let cover = coverUrl
+    const requestMetadata = vi.fn(async () => ({ status: 200, payload: { subject, metadata: {}, source, coverUrl: cover } }))
+    const fetchImpl = vi.fn(async (url, init) => {
+      expect(url).toBe(coverUrl)
+      expect(init.redirect).toBe('error')
+      expect(init.headers).not.toHaveProperty('authorization')
+      return new Response('test-cover', { headers: { 'content-type': 'image/jpeg' } })
+    })
+    const run = createBangumiKomga({ komga: () => komga, getOptions: () => options, requestMetadata, fetchImpl })
+    state.links.push({ label: 'Bangumi', url: 'https://bgm.tv/subject/123' })
+    const preview = await run('preview', seriesInput)
+    expect(preview).toMatchObject({ changes: {}, cover: { status: 'pending', url: coverUrl } })
+    expect(fetchImpl).not.toHaveBeenCalled()
+    expect(upload).not.toHaveBeenCalled()
+    expect(await run('apply', { previewId: preview.previewId })).toMatchObject({ updated: true, cover: { status: 'applied' } })
+    expect(upload).toHaveBeenCalledWith('http://komga:25600/api/v1/series/series-a/thumbnails?selected=true', 'image/jpeg', 10)
+    expect(patchSeries).not.toHaveBeenCalled()
+
+    const bookInput = { ...seriesInput, scope: 'book', bookId: 'book-a' }
+    const book = await run('preview', bookInput)
+    posters.push('USER_UPLOADED')
+    expect(await run('apply', { previewId: book.previewId })).toMatchObject({ updated: true, cover: { status: 'skipped' } })
+    expect(upload).toHaveBeenCalledOnce()
+    expect(patchBook).toHaveBeenCalledOnce()
+    expect(await run('preview', seriesInput)).toMatchObject({ previewId: null, cover: { status: 'skipped' } })
+    source = 'bangumi-archive'
+    expect(await run('preview', seriesInput)).toMatchObject({ previewId: null, cover: { status: 'unavailable' } })
+    source = 'bangumi-live'
+    cover = 'https://example.invalid/pic/cover/l/123.jpg'
+    expect(await run('preview', seriesInput)).toMatchObject({ previewId: null, cover: { status: 'unavailable' } })
+    expect(fetchImpl).toHaveBeenCalledOnce()
+  })
+
+  it('reports no update when a cover-only upload fails', async () => {
+    const { komga, state, upload } = fixture()
+    state.links.push({ label: 'Bangumi', url: 'https://bgm.tv/subject/123' })
+    const scanAfterApply = vi.fn()
+    const run = createBangumiKomga({
+      komga: () => komga, scanAfterApply, getOptions: () => ({ ...defaultScrapeOptions, seriesCover: true }),
+      requestMetadata: async () => ({ status: 200, payload: {
+        subject, metadata: {}, source: 'bangumi-live', coverUrl: 'https://lain.bgm.tv/pic/cover/l/123.jpg',
+      } }),
+      fetchImpl: async () => new Response('not an image', { headers: { 'content-type': 'text/html' } }),
+    })
+    const preview = await run('preview', seriesInput)
+    expect(await run('apply', { previewId: preview.previewId })).toMatchObject({ updated: false, cover: { status: 'failed' } })
+    expect(scanAfterApply).not.toHaveBeenCalled()
+    expect(upload).not.toHaveBeenCalled()
   })
 
   it('enforces both settings for existing metadata previews and keeps scan failure separate from writing', async () => {

@@ -1,5 +1,7 @@
 import { randomBytes } from 'node:crypto'
 import { normalizeKomgaUrl } from './komga-client.mjs'
+import { bangumiCoverUrl, downloadBangumiCover } from './bangumi-cover.mjs'
+import { defaultScrapeOptions } from './scrape-options.mjs'
 
 export class MetadataError extends Error {
   constructor(status, code, message) {
@@ -77,7 +79,7 @@ function rowList(value, pair, validate = () => true) {
   })
 }
 
-function changes(current, input, scope, subject) {
+function changes(current, input, scope, subject, options) {
   const patch = {}
   function field(name, value) {
     if (value !== undefined && current[name + 'Lock'] !== true && JSON.stringify(current[name]) !== JSON.stringify(value)) {
@@ -92,6 +94,10 @@ function changes(current, input, scope, subject) {
     if (value && (name !== 'releaseDate' || /^\d{4}-\d{2}-\d{2}$/.test(value))) field(name, value)
   }
   if (scope === 'series') {
+    const sortTitle = options.sortTitle && text(input.titleSort, 301)
+    if (sortTitle) field('titleSort', sortTitle)
+    const localVersion = options.addLocalVersion && text(input.localVersion, 100)
+    if (localVersion) field('genres', appendUnique(current.genres, [localVersion], (genre) => genre))
     field('alternateTitles', appendUnique(current.alternateTitles,
       rowList(input.alternateTitles, ['label', 'title']), (row) => row?.title))
     if (input.ageRating === 18 && Number(current.ageRating ?? 0) < 18) field('ageRating', 18)
@@ -119,7 +125,41 @@ function fingerprint(metadata, patch) {
   return JSON.stringify([...new Set(['links', ...Object.keys(patch)])].map((key) => [key, metadata[key], metadata[key + 'Lock']]))
 }
 
-export function createBangumiKomga({ url, requestMetadata, komga, scanAfterApply, fetchImpl = fetch }) {
+function checkLibrary(libraryId, rules, kind) {
+  if (rules.length && !rules.some((rule) =>
+    rule.id === libraryId && (!kind || rule.kind === 'all' || rule.kind === kind))) {
+    throw new MetadataError(403, 'SCRAPE_LIBRARY_EXCLUDED', '刮削设置未允许这个 Komga 书库或作品类型。')
+  }
+}
+
+async function previewCover(client, scope, id, data) {
+  const url = data.source === 'bangumi-live' ? bangumiCoverUrl(data.coverUrl) : null
+  if (!url) return { status: 'unavailable', message: '当前 Bangumi 数据未提供可用封面。' }
+  try {
+    if (await client.hasUploadedCover(scope, id)) return { status: 'skipped', message: 'Komga 已有上传的封面。' }
+    return { status: 'pending', url }
+  } catch {
+    return { status: 'failed', message: '无法确认 Komga 当前封面，已跳过封面变更。' }
+  }
+}
+
+async function applyCover(client, scope, id, url, fetchImpl) {
+  try {
+    if (!await client.hasUploadedCover(scope, id)) {
+      const { image, filename } = await downloadBangumiCover(url, fetchImpl)
+      if (!await client.hasUploadedCover(scope, id)) {
+        await client.uploadCover(scope, id, image, filename)
+        return { status: 'applied' }
+      }
+    }
+    return { status: 'skipped', message: 'Komga 已有上传的封面。' }
+  } catch {
+    return { status: 'failed', message: 'Bangumi 封面下载或 Komga 写入未获确认。' }
+  }
+}
+
+export function createBangumiKomga({ url, requestMetadata, komga, getOptions, scanAfterApply, fetchImpl = fetch }) {
+  const preferences = () => getOptions?.() ?? defaultScrapeOptions
   const previews = new Map()
   const writes = new Set()
   let active = 0
@@ -161,25 +201,36 @@ export function createBangumiKomga({ url, requestMetadata, komga, scanAfterApply
     if (!komgaId(body.seriesId) || (type.scope === 'book' && !komgaId(body.bookId)) || !subjectId(body.subjectId)) {
       throw new MetadataError(400, 'INVALID_METADATA_IDS', '请填写 Komga 系列 ID、Bangumi 条目 ID，以及单册 ID（单册模式）。')
     }
+    const options = preferences()
     const client = komga()
     const id = type.scope === 'series' ? body.seriesId : body.bookId
     const target = await client.metadataTarget(type.scope, id)
     if (target.seriesId !== body.seriesId) throw new MetadataError(409, 'BOOK_SERIES_MISMATCH', '该单册不属于指定系列。')
-    const data = await adapter('metadata', { ...type, subjectId: body.subjectId })
+    checkLibrary(target.libraryId, options.libraries, type.kind)
+    const includeCover = type.scope === 'series' ? options.seriesCover : options.bookCover
+    const data = await adapter('metadata', {
+      ...type, subjectId: body.subjectId,
+      ...(options.sortTitle || options.addLocalVersion ? {
+        sortTitle: options.sortTitle, addLocalVersion: options.addLocalVersion, localName: text(target.name, 300),
+      } : {}),
+      ...(includeCover ? { includeCover } : {}),
+    })
     const subject = candidate(data?.subject)
     if (subject.id !== body.subjectId || !object(data.metadata)) {
       throw new MetadataError(502, 'INVALID_METADATA_RESPONSE', 'BangumiKomga 返回的条目与请求不一致。')
     }
-    const patch = changes(target.metadata, data.metadata, type.scope, subject)
+    const patch = changes(target.metadata, data.metadata, type.scope, subject, options)
+    const cover = includeCover ? await previewCover(client, type.scope, id, data) : null
     const fields = Object.keys(patch)
     const result = { ...type, ...provenance(data), id, seriesId: target.seriesId, name: target.name, subject,
+      ...(cover ? { cover } : {}),
       changes: Object.fromEntries(fields.map((key) => [key, { before: target.metadata[key] ?? null, after: patch[key] }])),
     }
-    if (!fields.length) return { ...result, previewId: null }
+    if (!fields.length && cover?.status !== 'pending') return { ...result, previewId: null }
     const previewId = randomBytes(24).toString('base64url')
     if (previews.size >= MAX_PREVIEWS) previews.delete(previews.keys().next().value)
     previews.set(previewId, {
-      ...type, id, result, client, patch, libraryId: target.libraryId, fingerprint: fingerprint(target.metadata, patch), expires: Date.now() + PREVIEW_MS,
+      ...type, id, result, client, patch, options: JSON.stringify(options), libraryId: target.libraryId, fingerprint: fingerprint(target.metadata, patch), expires: Date.now() + PREVIEW_MS,
     })
     return { ...result, previewId, expiresInSeconds: PREVIEW_MS / 1000 }
   }
@@ -199,15 +250,24 @@ export function createBangumiKomga({ url, requestMetadata, komga, scanAfterApply
     try {
       const current = komga()
       if (current !== item.client) throw new MetadataError(409, 'KOMGA_CONFIGURATION_CHANGED', 'Komga 配置已改变，请重新预览。')
+      if (JSON.stringify(preferences()) !== item.options) {
+        throw new MetadataError(409, 'SCRAPE_OPTIONS_CHANGED', '刮削设置已改变，请重新预览。')
+      }
       const target = await current.metadataTarget(item.scope, item.id)
-      if (target.seriesId !== item.result.seriesId || target.libraryId !== item.libraryId ||
+      if (target.seriesId !== item.result.seriesId || target.libraryId !== item.libraryId || target.name !== item.result.name ||
           fingerprint(target.metadata, item.patch) !== item.fingerprint) {
         throw new MetadataError(409, 'METADATA_CHANGED', 'Komga 的当前元数据已改变，请重新预览。')
       }
       previews.delete(body.previewId)
-      await current.patchMetadata(item.scope, item.id, item.patch)
-      const scan = await scanAfterApply?.(current, target.libraryId)
-      return { ...item.result, updated: true, ...(scan ? { scan } : {}) }
+      const hasPatch = Object.keys(item.patch).length > 0
+      if (hasPatch) await current.patchMetadata(item.scope, item.id, item.patch)
+      const pendingCover = item.result.cover
+      const cover = pendingCover?.status === 'pending'
+        ? await applyCover(current, item.scope, item.id, pendingCover.url, fetchImpl)
+        : pendingCover
+      const updated = hasPatch || cover?.status === 'applied'
+      const scan = updated ? await scanAfterApply?.(current, target.libraryId) : null
+      return { ...item.result, updated, ...(cover ? { cover } : {}), ...(scan ? { scan } : {}) }
     } finally {
       writes.delete(key)
     }
@@ -223,7 +283,13 @@ export function createBangumiKomga({ url, requestMetadata, komga, scanAfterApply
         if (!komgaId(body.seriesId) || !Number.isInteger(page) || page < 0 || page > 10000) {
           throw new MetadataError(400, 'INVALID_METADATA_IDS', '请填写 Komga 系列 ID 和有效页码。')
         }
-        return await komga().metadataBooks(body.seriesId, page)
+        const client = komga()
+        const { libraries } = preferences()
+        if (libraries.length) {
+          const target = await client.metadataTarget('series', body.seriesId)
+          checkLibrary(target.libraryId, libraries)
+        }
+        return await client.metadataBooks(body.seriesId, page)
       }
       if (action === 'apply') return await apply(body)
       if (action === 'preview') return await preview(body)
@@ -232,7 +298,10 @@ export function createBangumiKomga({ url, requestMetadata, komga, scanAfterApply
       const type = selection(body)
       const data = await adapter('search', { ...type, query })
       if (!Array.isArray(data?.candidates)) throw new MetadataError(502, 'INVALID_METADATA_RESPONSE', 'BangumiKomga 返回了无效的搜索结果。')
-      return { ...type, ...provenance(data), candidates: data.candidates.slice(0, 10).map(candidate) }
+      const { minimumScore } = preferences()
+      const candidates = data.candidates.slice(0, 10).map(candidate)
+        .filter((row) => minimumScore === 0 || (row.score >= minimumScore && row.score <= 100))
+      return { ...type, ...provenance(data), candidates }
     } finally {
       active -= 1
     }

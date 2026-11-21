@@ -5,12 +5,31 @@ import { PageHeader } from '@/components/common/PageHeader'
 import { Button, Card, SectionTitle, Spinner } from '@/components/common/ui'
 import { useToast } from '@/components/common/Toast'
 import { useAsync } from '@/hooks/useAsync'
+import { komgaApi } from '@/services/komgaApi'
 import { apiFetch, IS_LIVE } from '@/services/runtime'
 
 type RefreshMode = 'manual' | 'after-sync' | 'after-sync-or-scrape'
 type SourceMode = 'live' | 'archive'
+type LibraryKind = 'all' | 'novel' | 'manga'
+interface ScrapeOptions {
+  minimumScore: number
+  libraries: Array<{ id: string; kind: LibraryKind }>
+  sortTitle: boolean
+  addLocalVersion: boolean
+  seriesCover: boolean
+  bookCover: boolean
+}
+const defaultOptions: ScrapeOptions = {
+  minimumScore: 0, libraries: [], sortTitle: false, addLocalVersion: false, seriesCover: false, bookCover: false,
+}
+const switches = [
+  ['sortTitle', '为系列排序标题添加首字母', '用原始目录名排序。需要时在开头加上 Bangumi 标题的英文或拼音首字母。'],
+  ['addLocalVersion', '添加本地出版社标签', '识别原始目录名中的出版社，将其加入 Komga 系列的流派栏。'],
+  ['seriesCover', '使用 Bangumi 系列封面', '仅在 Komga 没有上传的系列封面时添加。'],
+  ['bookCover', '使用 Bangumi 单册封面', '仅在 Komga 没有上传的单册封面时添加。'],
+] as const
 interface ScrapingStatus {
-  preferences: { scrapeEnabled: boolean; scraperConfigured: boolean; refreshMode: RefreshMode }
+  preferences: { scrapeEnabled: boolean; scraperConfigured: boolean; refreshMode: RefreshMode; scrapeOptions?: ScrapeOptions }
   bangumi: {
     managed: boolean
     archiveAvailable: boolean
@@ -45,12 +64,19 @@ function ScrapingForms({ initial }: { initial: ScrapingStatus }) {
   const [status, setStatus] = useState(initial)
   const [scrapeEnabled, setScrapeEnabled] = useState(initial.preferences.scrapeEnabled)
   const [refreshMode, setRefreshMode] = useState<RefreshMode>(initial.preferences.refreshMode)
+  const [options, setOptions] = useState(initial.preferences.scrapeOptions ?? defaultOptions)
+  const libraries = useAsync(() => komgaApi.libraries(), [])
+  const libraryChoices = new Map(libraries.data?.libraries.map(({ id, name }) => [id, name]))
+  for (const { id } of options.libraries) {
+    if (!libraryChoices.has(id)) libraryChoices.set(id, id)
+  }
   const [sourceMode, setSourceMode] = useState<SourceMode>(initial.bangumi.sourceMode)
   const [accessToken, setAccessToken] = useState('')
   const [saving, setSaving] = useState<'scrape' | 'bangumi' | null>(null)
   const [error, setError] = useState('')
   const busy = saving !== null
-  const preferencesChanged = scrapeEnabled !== status.preferences.scrapeEnabled || refreshMode !== status.preferences.refreshMode
+  const preferencesChanged = scrapeEnabled !== status.preferences.scrapeEnabled || refreshMode !== status.preferences.refreshMode ||
+    JSON.stringify(options) !== JSON.stringify(status.preferences.scrapeOptions ?? defaultOptions)
   const bangumiChanged = sourceMode !== status.bangumi.sourceMode || Boolean(accessToken.trim())
 
   async function save(section: 'scrape' | 'bangumi', clearAccessToken = false) {
@@ -58,7 +84,7 @@ function ScrapingForms({ initial }: { initial: ScrapingStatus }) {
     setError('')
     try {
       const token = accessToken.trim()
-      const body = section === 'scrape' ? { action: 'save-komga-preferences', scrapeEnabled, refreshMode }
+      const body = section === 'scrape' ? { action: 'save-komga-preferences', scrapeEnabled, refreshMode, scrapeOptions: options }
         : {
             action: 'save-bangumi-settings', sourceMode,
             ...(clearAccessToken ? { clearAccessToken: true } : token ? { accessToken: token } : {}),
@@ -66,6 +92,7 @@ function ScrapingForms({ initial }: { initial: ScrapingStatus }) {
       const next = await apiFetch<ScrapingStatus>(endpoint, { method: 'POST', body: JSON.stringify(body) })
       setStatus(next)
       if (section === 'bangumi') setAccessToken('')
+      else setOptions(next.preferences.scrapeOptions ?? defaultOptions)
       toast({ tone: 'success', title: section === 'scrape' ? '刮削设置已保存' : 'Bangumi 配置已保存' })
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : '保存失败。')
@@ -76,7 +103,7 @@ function ScrapingForms({ initial }: { initial: ScrapingStatus }) {
 
   return (
     <div className="max-w-[960px] space-y-4">
-      <div className="grid gap-4 lg:grid-cols-2">
+      <div className="grid items-start gap-4 lg:grid-cols-2">
         <Card className="p-5">
           <SectionTitle title="刮削设置" />
           <form className="mt-4 space-y-4" onSubmit={(event) => { event.preventDefault(); void save('scrape') }}>
@@ -106,6 +133,53 @@ function ScrapingForms({ initial }: { initial: ScrapingStatus }) {
                 刷新由 Komga 在后台执行。「同步 Komga 路径」里也可手动刷新。
               </p>
             </div>
+            <fieldset className="space-y-4 border-t border-line pt-4" disabled={busy}>
+              <legend className="pr-3 text-sm font-semibold text-ink">匹配与写入</legend>
+              <div>
+                <label className="block text-sm text-ink-soft">标题匹配最低分
+                  <input type="number" min={0} max={100} step={1} required className={input}
+                    value={Number.isNaN(options.minimumScore) ? '' : options.minimumScore}
+                    aria-describedby="scrape-minimum-help"
+                    onChange={(event) => setOptions({ ...options, minimumScore: event.target.valueAsNumber })} />
+                </label>
+                <p id="scrape-minimum-help" className="mt-2 text-xs text-ink-soft">0 表示不过滤候选，BangumiKomga 的默认值为 80。手动选择条目 ID 时仍可预览。</p>
+              </div>
+              <div className="space-y-2">
+                <p className="text-sm text-ink-soft">允许刮削的 Komga 书库</p>
+                <p className="text-xs text-ink-soft">不指定书库时允许所有书库。为任一书库指定类型后，仅允许列表内所选的书库和类型。</p>
+                {libraries.loading && <p role="status" className="text-xs text-ink-soft">读取 Komga 书库…</p>}
+                {libraries.error && <p className="text-xs text-negative">暂时无法读取 Komga 书库。已保存的规则仍可查看和修改。</p>}
+                {!libraries.loading && !libraries.error && libraryChoices.size === 0 && <p className="text-xs text-ink-soft">Komga 暂无书库。</p>}
+                {[...libraryChoices].map(([id, name]) => (
+                  <label key={id} className="block break-words text-sm text-ink-soft">{name}
+                    <select className={input} value={options.libraries.find((item) => item.id === id)?.kind ?? ''}
+                      onChange={(event) => {
+                        const kind = event.target.value as LibraryKind | ''
+                        setOptions({ ...options, libraries: [
+                          ...options.libraries.filter((item) => item.id !== id), ...(kind ? [{ id, kind }] : []),
+                        ] })
+                      }}>
+                      <option value="">未指定</option>
+                      <option value="all">轻小说与漫画</option>
+                      <option value="novel">仅轻小说</option>
+                      <option value="manga">仅漫画</option>
+                    </select>
+                  </label>
+                ))}
+              </div>
+              {status.bangumi.managed && <div className="space-y-2">
+                {switches.map(([key, label, hint]) => <div key={key}>
+                  <label className="flex items-center gap-2 py-1 text-sm text-ink">
+                    <input type="checkbox" role="switch" className="h-4 w-4 shrink-0 accent-accent"
+                      checked={options[key]} onChange={(event) => setOptions({ ...options, [key]: event.target.checked })}
+                      aria-describedby={`scrape-${key}-help`} />
+                    {label}
+                  </label>
+                  <p id={`scrape-${key}-help`} className="text-xs leading-relaxed text-ink-soft">{hint}</p>
+                </div>)}
+                <p className="text-xs text-ink-soft">封面选项仅在使用 Bangumi 实时 API 时生效。</p>
+              </div>}
+            </fieldset>
             <Button type="submit" size="sm" variant="primary" loading={saving === 'scrape'}
               disabled={busy || !preferencesChanged}>保存刮削设置</Button>
           </form>
