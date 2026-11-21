@@ -4,6 +4,7 @@ import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { createApi } from '../../server/api.mjs'
 import { createBangumiKomga } from '../../server/bangumi-komga.mjs'
+import { resolveDownloadSubject } from '../../server/bangumi-download.mjs'
 import { createKomgaClient } from '../../server/komga-client.mjs'
 import { defaultScrapeOptions } from '../../server/scrape-options.mjs'
 
@@ -68,6 +69,18 @@ function fixture() {
 }
 
 describe('BangumiKomga metadata', () => {
+  it('accepts a confirmed source title absent from Bangumi while retaining the Bangumi folder name', async () => {
+    const metadata = vi.fn(async () => ({
+      subject: { id: 123, title: '正式名称', aliases: ['另一名称'] },
+    }))
+    await expect(resolveDownloadSubject(metadata, 'manga', ['其他譯名'], 123, '其他譯名'))
+      .resolves.toEqual({ id: 123, title: '正式名称' })
+    await expect(resolveDownloadSubject(metadata, 'manga', ['其他譯名'], 123, '错误译名'))
+      .rejects.toMatchObject({ code: 'BANGUMI_SOURCE_MISMATCH' })
+    await expect(resolveDownloadSubject(metadata, 'manga', ['其他譯名'], undefined, '其他譯名'))
+      .rejects.toMatchObject({ code: 'BANGUMI_SOURCE_MISMATCH' })
+  })
+
   it('uses the official Chinese title, returns aliases, and leaves same-name series unresolved', async () => {
     const requestMetadata = vi.fn(async (action, params) => ({
       status: 200, payload: action === 'search'

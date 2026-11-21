@@ -134,9 +134,9 @@ export function createApi(
     missingBffAuth: settings.mangaCredentialsConfigured && !settings.token && !settings.auth,
     archiveHistory: settings.archiveHistory,
     postDownload: settings.postDownload?.status,
-    async bindBangumi(mangaId, id) {
+    async bindBangumi(mangaId, id, sourceTitle) {
       const manga = await mangaClient.getManga(mangaId)
-      const subject = await resolveDownloadSubject(metadata, 'manga', [manga.title], id)
+      const subject = await resolveDownloadSubject(metadata, 'manga', [manga.title], id, sourceTitle)
       await bindMangaTitle(settings.config?.downloadFoldersFile, manga, subject)
       return subject
     },
@@ -295,16 +295,20 @@ export function createApi(
       assertSafePublicUrl(book.sourceUrl, adapter.hosts)
     }
 
-    const bangumi = jobsCredential || body.bangumiSubjectId !== undefined
-      ? await resolveDownloadSubject(metadata, 'novel', [book.title, ...(book.aliases ?? [])], body.bangumiSubjectId)
-      : undefined
+    let work = book
+    let bangumi
+    if (jobsCredential || body.bangumiSubjectId !== undefined) {
+      if (!runtime.index.find(book.id)) work = (await runtime.novels.details({ bookId: book.id }, false)).novel
+      bangumi = await resolveDownloadSubject(metadata, 'novel', [work.title, ...(work.aliases ?? [])],
+        body.bangumiSubjectId, body.sourceTitle)
+    }
     const task = await runtime.tasks.start({
       bookId: book.id,
       sourceId: book.sourceId,
       source: book.source,
       sourceUrl: book.sourceUrl,
-      title: book.title,
-      author: book.author,
+      title: work.title,
+      author: work.author,
       ...(bangumi ? { bangumi } : {}),
       volumes: selector,
       volumeNames: names.length ? names : selector === 'all' ? [] : selector.split(','),

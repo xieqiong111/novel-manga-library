@@ -6,5 +6,6 @@ export declare function studioJob<T = unknown>(
 ): Promise<T>
 export declare function searchStudioWork<T = Record<string, unknown>>(
   kind: 'novel' | 'manga',
-  options: { query: string; bangumiSubjectId?: number; sourceQuery?: string; [key: string]: string | number | boolean | undefined },
+  options: { query: string; bangumiSubjectId?: number; sourceQuery?: string; alternateNames?: string[];
+    [key: string]: string | string[] | number | boolean | undefined },
 ): Promise<T>

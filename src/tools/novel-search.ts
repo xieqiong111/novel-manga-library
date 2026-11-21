@@ -17,7 +17,7 @@ export function registerNovelSearch(ctx: Context, runtime: PluginRuntime) {
       'Traditional and Simplified Chinese queries are matched, and results are ranked and deduplicated.',
       'Returns structured hits containing title, author, coverUrl, description, source, sourceUrl, status/statusText, lastUpdated, volumeCount, tags and score.',
       'Use the returned `id` (sourceId:bookId) with novel_details, novel_volumes and novel_download.',
-      'Studio looks up the work in Bangumi first, searches using its official title, then tries its aliases. Keep bangumi.id with the source result; pass it as bangumiSubjectId to novel_download.',
+      'Studio tries the Bangumi title first, followed by other known names, including Traditional Chinese. Pass the result’s bangumi.id to novel_download.',
       'Only public pages are accessed, with robots.txt and per-host rate limits honoured.',
     ].join(' '),
     parameters: {
@@ -39,6 +39,7 @@ export function registerNovelSearch(ctx: Context, runtime: PluginRuntime) {
         description: 'Force a live source query even when the local index already has matches (default false).',
       },
       bangumiSubjectId: { type: 'number', description: 'Confirmed Bangumi series ID when choosing among Bangumi candidates in Studio mode.' },
+      alternateNames: { type: 'array', items: { type: 'string' }, description: 'Up to three additional names for source searches, including Traditional Chinese or names absent from Bangumi.' },
     },
     output: jsonOutput(),
     async execute(args) {
@@ -54,9 +55,9 @@ export function registerNovelSearch(ctx: Context, runtime: PluginRuntime) {
         })
         return ok({
           ...outcome,
-          nextStep: outcome.results.length > 0
+          nextStep: 'notice' in outcome ? outcome.notice : outcome.results.length > 0
             ? `Call novel_details with bookId "${outcome.results[0]!.id}" to see volumes.`
-            : ('notice' in outcome ? outcome.notice : 'No matches. Try a shorter title, an alias, the author name, or searchMode=hybrid with refresh=true.'),
+            : 'No matches. Try a shorter title, an alias, the author name, or searchMode=hybrid with refresh=true.',
         })
       })
     },

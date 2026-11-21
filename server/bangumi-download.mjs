@@ -27,12 +27,14 @@ export async function readMangaBangumiBinding(settingsFile, mangaId) {
   }
 }
 
-export async function resolveDownloadSubject(metadata, kind, sourceTitles, id) {
+export async function resolveDownloadSubject(metadata, kind, sourceTitles, id, confirmedSourceTitle) {
   const { subject } = await metadata('identity', { kind, query: sourceTitles[0], subjectId: id })
   if (!subject) {
     throw new MetadataError(409, 'BANGUMI_SUBJECT_REQUIRED', '请先按作品名查询 Bangumi，确认对应的系列条目后再下载。')
   }
-  if (!sourceTitles.some((title) => [subject.title, ...subject.aliases].some((name) => sameBangumiTitle(title, name)))) {
+  const matchesTitle = sourceTitles.some((title) => [subject.title, ...subject.aliases].some((name) => sameBangumiTitle(title, name)))
+  const confirmed = id !== undefined && typeof confirmedSourceTitle === 'string' && sourceTitles.includes(confirmedSourceTitle)
+  if (!matchesTitle && !confirmed) {
     throw new MetadataError(409, 'BANGUMI_SOURCE_MISMATCH', '下载源的作品名与所选 Bangumi 条目及其别名不符，请核对作品和版本。')
   }
   return { id: subject.id, title: subject.title }

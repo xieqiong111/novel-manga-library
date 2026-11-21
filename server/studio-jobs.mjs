@@ -1,7 +1,7 @@
 import { timingSafeEqual } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { SuwayomiError } from './suwayomi-client.mjs'
-import { sameBangumiTitle } from './bangumi-title.mjs'
+import { sameBangumiTitle, traditionalBangumiTitle } from './bangumi-title.mjs'
 
 const tokenFormat = /^studio_jobs_[A-Za-z0-9_-]{43}$/
 
@@ -72,33 +72,38 @@ export async function studioJob(pathname, { method = 'GET', body, query } = {}, 
   }
 }
 
-export async function searchStudioWork(kind, { bangumiSubjectId, sourceQuery, ...filters }) {
+export async function searchStudioWork(kind, { bangumiSubjectId, sourceQuery, alternateNames = [], ...filters }) {
   const path = kind === 'manga' ? '/api/manga/search' : '/api/novels'
   const field = kind === 'manga' ? 'mangas' : 'results'
   const { subject, candidates } = await studioJob('/api/bangumi/title', {
     query: { kind, query: filters.query, subjectId: bangumiSubjectId },
   })
-  if (!subject) return { [field]: [], bangumi: null, bangumiCandidates: candidates,
-    notice: '请确认对应的 Bangumi 系列条目，再用它的 ID 继续搜索。' }
-  const titles = [subject.title, ...subject.aliases]
-  const supported = [...new Set(titles)].filter((title) => title.length <= 200)
+  const names = [filters.query, ...alternateNames.slice(0, 3)].map((name) => name.trim())
+    .filter((name) => name && name.length <= 200)
+  const titles = [...new Set([subject?.title, ...names, ...(subject?.aliases ?? [])]
+    .filter((title) => title && title.length <= 200))]
+  const variants = [subject?.title, ...names].filter(Boolean).map(traditionalBangumiTitle)
+  const supported = [...new Set([subject?.title, ...names, ...variants, ...(subject?.aliases ?? [])]
+    .filter((title) => title && title.length <= 200))]
   if (sourceQuery && !supported.includes(sourceQuery)) {
-    throw new SuwayomiError('INVALID_SOURCE_QUERY', '请使用本次 Bangumi 搜索返回的 sourceQuery。', 400)
+    throw new SuwayomiError('INVALID_SOURCE_QUERY', '请使用本次搜索返回的 sourceQuery，并保留上次输入的其他名称。', 400)
   }
   if (filters.offset && !sourceQuery) {
     throw new SuwayomiError('SOURCE_QUERY_REQUIRED', '翻页请带上上一页返回的 sourceQuery。', 400)
   }
   const attemptedQueries = []
   let unconfirmedMatches = []
-  for (const query of sourceQuery ? [sourceQuery] : supported.slice(0, 4)) {
+  for (const query of sourceQuery ? [sourceQuery] : supported.slice(0, 7)) {
     const data = await studioJob(path, { query: { ...filters, query } })
     attemptedQueries.push(query)
+    if (!subject && (data[field].length || sourceQuery)) return { ...data, bangumi: null, bangumiCandidates: candidates,
+      sourceQuery: query, attemptedQueries, notice: '已找到源站作品，下载前还需确认对应的 Bangumi 系列。' }
     const matches = data[field].filter((entry) => [entry.title, ...(entry.aliases ?? [])]
       .some((title) => titles.some((name) => sameBangumiTitle(title, name))))
     if (matches.length || sourceQuery) return { ...data, [field]: matches, bangumi: subject,
       sourceQuery: query, attemptedQueries }
     if (!unconfirmedMatches.length) unconfirmedMatches = data[field]
   }
-  return { [field]: [], bangumi: subject, attemptedQueries, unconfirmedMatches,
-    notice: '已按 Bangumi 名称及别名搜索，下载源暂未返回可以确认的同名作品。' }
+  return { [field]: [], bangumi: subject, ...(!subject ? { bangumiCandidates: candidates } : {}),
+    attemptedQueries, unconfirmedMatches, notice: '下载源暂未返回可以确认的作品，可再提供繁体译名或其他称呼。' }
 }

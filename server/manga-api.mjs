@@ -238,10 +238,10 @@ export function createMangaApi(client, logger = { warn() {} },
             }
             sendJson(res, 200, await komga.status(mangaId, volume, selection))
           } else {
-            const { volume, chapterIds, bangumiSubjectId } = await readJson(req)
+            const { volume, chapterIds, bangumiSubjectId, sourceTitle } = await readJson(req)
             if (volume !== undefined) throw new MangaApiError(409, 'VOLUME_DOWNLOAD_DISABLED', '漫画下载现按章进行，请使用章节 ID。')
             const name = jobsCredential || bangumiSubjectId !== undefined
-              ? () => bindBangumi(mangaId, bangumiSubjectId) : undefined
+              ? () => bindBangumi(mangaId, bangumiSubjectId, sourceTitle) : undefined
             sendJson(res, 200, await komga.downloadChapters(mangaId, chapterIds, name))
           }
           return true

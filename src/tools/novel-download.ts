@@ -34,6 +34,7 @@ export function registerNovelDownload(ctx: Context, runtime: PluginRuntime) {
     parameters: {
       bookId: { type: 'string', description: 'Book id from novel_search, e.g. "fixture:demo" or "bilinovel:1234". Provide this or url.' },
       bangumiSubjectId: { type: 'number', description: 'Bangumi series ID returned by novel_search in Studio mode.' },
+      sourceTitle: { type: 'string', description: 'Exact title returned by the source for an unlisted alias. Use only with bangumiSubjectId after checking that both entries refer to the same work. Folder naming still comes from Bangumi.' },
       url: { type: 'string', description: 'Canonical detail page URL on an enabled public source. Provide this or bookId.' },
       source: { type: 'string', description: 'Optional source id hint (bilinovel / wenku8 / fixture).' },
       volumes: {

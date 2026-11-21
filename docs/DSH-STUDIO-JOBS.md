@@ -18,9 +18,9 @@
 
 ## 任务和下一步
 
-输入作品名后，`novel_search` 和 `manga_search` 会先查询 Bangumi 的同类型系列。确定条目后，Studio 优先用 Bangumi 中文名搜索下载源，条目没有中文名时使用原名。源站未找到匹配作品时再试 Bangumi 列出的别名。碰到多个同名条目时，先选定正确的 `bangumiSubjectId` 并重新搜索。
+输入作品名后，`novel_search` 和 `manga_search` 会先查询 Bangumi 的同类型系列。确定条目后，优先用 Bangumi 中文名搜索下载源，条目没有中文名时使用原名。源站搜索也可用原输入、繁体写法、Bangumi 别名和 `alternateNames` 提供的其他称呼。Bangumi 有多个候选时，仍可先浏览源站；提交下载前需确认对应的 `bangumiSubjectId`。
 
-下载时同时使用源站的作品 ID 和搜索结果中的 `bangumi.id`。新作品文件夹使用 Bangumi 名称，自动替换文件系统不支持的字符。已归档文件保留在原目录。相同名称的其他版本占用目标目录时，Studio 返回冲突并保留原文件。漫画归档容器须与 Studio 共用下载设置目录，以便下载前确认命名。
+下载时同时使用源站作品 ID 和 `bangumi.id`。下载源使用 Bangumi 未登记的译名时，在确认是同一部作品后附上源站返回的 `sourceTitle`。新作品文件夹始终按 Bangumi 条目命名，并替换文件系统不支持的字符。已归档文件保留在原目录。相同名称的其他版本占用目标目录时，Studio 返回冲突。漫画归档容器须与 Studio 共用下载设置目录，以便下载前确认命名。
 
 | DSH 工具 | Studio API | 下一步 |
 | --- | --- | --- |
