@@ -122,6 +122,7 @@ export function createApi(
     url: settings.bangumiKomgaUrl,
     requestMetadata: settings.bangumiWorker?.request,
     komga: currentKomga,
+    getOptions: () => settings.integrations?.preferences?.scrapeOptions,
     scanAfterApply: async (client, libraryId) => settings.integrations?.preferences?.refreshMode === 'after-sync-or-scrape'
       ? await scan(client, libraryId)
       : { accepted: false, skipped: true, message: '已跳过自动刷新。' },

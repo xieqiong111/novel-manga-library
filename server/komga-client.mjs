@@ -72,14 +72,14 @@ function responseHeader(response, name) {
   return response.headers?.get?.(name) ?? ''
 }
 
-async function readLimitedBody(response, maxBytes) {
+export async function readLimitedBody(response, maxBytes, source = "Komga") {
   const declared = Number(responseHeader(response, 'content-length'))
   if (Number.isFinite(declared) && declared > maxBytes) {
-    throw new KomgaError('RESPONSE_TOO_LARGE', 'Komga response exceeded the size limit', 502)
+    throw new KomgaError('RESPONSE_TOO_LARGE', `${source} response exceeded the size limit`, 502)
   }
   if (!response.body?.getReader) {
     const bytes = Buffer.from(await response.arrayBuffer())
-    if (bytes.length > maxBytes) throw new KomgaError('RESPONSE_TOO_LARGE', 'Komga response exceeded the size limit', 502)
+    if (bytes.length > maxBytes) throw new KomgaError('RESPONSE_TOO_LARGE', `${source} response exceeded the size limit`, 502)
     return bytes
   }
   const reader = response.body.getReader()
@@ -92,7 +92,7 @@ async function readLimitedBody(response, maxBytes) {
       length += value.byteLength
       if (length > maxBytes) {
         await reader.cancel().catch(() => {})
-        throw new KomgaError('RESPONSE_TOO_LARGE', 'Komga response exceeded the size limit', 502)
+        throw new KomgaError('RESPONSE_TOO_LARGE', `${source} response exceeded the size limit`, 502)
       }
       chunks.push(Buffer.from(value))
     }
@@ -203,7 +203,7 @@ export function createKomgaClient(config = readKomgaConfig(), options = {}) {
     if (!configured) throw new KomgaError('NOT_CONFIGURED', 'Komga is not configured', 503)
   }
 
-  async function request(pathname, { method = 'GET', body, maxBytes = MAX_JSON_BYTES } = {}) {
+  async function request(pathname, { method = 'GET', body, form, maxBytes = MAX_JSON_BYTES } = {}) {
     requireConfigured()
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), timeoutMs)
@@ -216,7 +216,7 @@ export function createKomgaClient(config = readKomgaConfig(), options = {}) {
           ...authHeaders,
           ...(body === undefined ? {} : { 'content-type': 'application/json' }),
         },
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        ...(form ? { body: form } : body === undefined ? {} : { body: JSON.stringify(body) }),
         signal: controller.signal,
         redirect: 'error',
         cache: 'no-store',
@@ -362,6 +362,26 @@ export function createKomgaClient(config = readKomgaConfig(), options = {}) {
     if (response.status !== 204) throw new KomgaError('INVALID_RESPONSE', 'Komga did not confirm the metadata update', 502)
   }
 
+
+  async function hasUploadedCover(scope, id) {
+    const items = await requestJson(`${metadataPath(scope, id)}/thumbnails`)
+    if (!Array.isArray(items) || items.some((item) => typeof item?.type !== 'string')) {
+      throw new KomgaError('INVALID_RESPONSE', 'Komga returned invalid posters', 502)
+    }
+    return items.some((item) => item.type === 'USER_UPLOADED')
+  }
+
+  async function uploadCover(scope, id, image, filename) {
+    const form = new FormData()
+    form.append('file', image, filename)
+    const response = await requestJson(`${metadataPath(scope, id)}/thumbnails?selected=true`, {
+      method: 'POST', form, maxBytes: 16 * 1024,
+    })
+    if (response?.type !== 'USER_UPLOADED' || response.selected !== true || typeof response.id !== 'string' || !response.id) {
+      throw new KomgaError('INVALID_RESPONSE', 'Komga did not confirm the selected poster', 502)
+    }
+  }
+
   async function status() {
     if (configError) throw configError
     if (!baseUrl) return { configured: false, connected: false }
@@ -369,5 +389,5 @@ export function createKomgaClient(config = readKomgaConfig(), options = {}) {
     return { configured: true, connected: true, libraryCount: result.libraries.length }
   }
 
-  return { configured, libraries, series, thumbnail, status, scanLibrary, metadataBooks, metadataTarget, patchMetadata }
+  return { configured, libraries, series, thumbnail, status, scanLibrary, metadataBooks, metadataTarget, patchMetadata, hasUploadedCover, uploadCover }
 }

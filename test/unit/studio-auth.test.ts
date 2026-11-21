@@ -100,7 +100,8 @@ it('scopes the DSH credential and never returns stored secrets', async () => {
     const cookie = setup.headers.get('set-cookie')!.split(';')[0]
     const route = '/api/settings/integrations'
     const before = await (await send('GET', route, undefined, cookie)).json()
-    expect(before.preferences).toEqual({ scrapeEnabled: false, scraperConfigured: false, refreshMode: 'after-sync' })
+    const defaults = { minimumScore: 0, libraries: [], sortTitle: false, addLocalVersion: false, seriesCover: false, bookCover: false }
+    expect(before.preferences).toEqual({ scrapeEnabled: false, scraperConfigured: false, refreshMode: 'after-sync', scrapeOptions: defaults })
     expect(before.bangumi).toEqual({
       managed: true, archiveAvailable: true, archiveVersion: '2026-11-17T21:04:20.000Z',
       sourceMode: 'archive', hasAccessToken: false, hasSavedAccessToken: false,
@@ -117,9 +118,22 @@ it('scopes the DSH credential and never returns stored secrets', async () => {
     expect((await send('POST', route, preferences)).status).toBe(401)
     expect((await send('POST', route, { ...preferences, scrapeEnabled: 'true' }, cookie)).status).toBe(400)
     expect((await send('POST', route, { ...preferences, refreshMode: 'invalid' }, cookie)).status).toBe(400)
-    const saved = await (await send('POST', route, preferences, cookie)).json()
-    expect(saved.preferences).toEqual({ scrapeEnabled: true, scraperConfigured: false, refreshMode: 'manual' })
-    expect((await loadIntegrations(settings))?.preferences).toEqual({ scrapeEnabled: true, refreshMode: 'manual' })
+    const options = { ...defaults, minimumScore: 80, libraries: [{ id: 'books-1', kind: 'novel' }], bookCover: true }
+    for (const scrapeOptions of [
+      { ...options, minimumScore: 101 }, { ...options, libraries: [{ id: '../books', kind: 'manga' }] },
+      { ...options, libraries: [...options.libraries, ...options.libraries] }, { ...options, bookCover: 'yes' },
+    ]) {
+      expect((await send('POST', route, { ...preferences, scrapeOptions }, cookie)).status).toBe(400)
+    }
+    const saved = await (await send('POST', route, { ...preferences, scrapeOptions: options }, cookie)).json()
+    expect(saved.preferences).toEqual({
+      scrapeEnabled: true, scraperConfigured: false, refreshMode: 'manual', scrapeOptions: options,
+    })
+    const compat = await (await send('POST', route, { ...preferences, refreshMode: 'after-sync' }, cookie)).json()
+    expect(compat.preferences.scrapeOptions).toEqual(options)
+    expect((await loadIntegrations(settings))?.preferences).toEqual({
+      scrapeEnabled: true, refreshMode: 'after-sync', scrapeOptions: options,
+    })
     const invalid = await send('POST', route, { action: 'save-komga', url: 'http://unapproved.invalid', apiKey: 'abc' }, cookie)
     expect(invalid.status).toBe(400)
     const first = await (await send('POST', route, { action: 'rotate-dsh' }, cookie)).json()

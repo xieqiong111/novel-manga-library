@@ -4,6 +4,8 @@ import path from 'node:path'
 import { atomicWriteJson } from '../dist/util/json.js'
 import { createKomgaClient, normalizeKomgaUrl, readKomgaConfig } from './komga-client.mjs'
 
+import { defaultScrapeOptions, parseScrapeOptions } from './scrape-options.mjs'
+
 const refreshModes = ['manual', 'after-sync', 'after-sync-or-scrape']
 const defaultKomgaRefreshMode = 'after-sync'
 
@@ -72,6 +74,7 @@ export async function loadIntegrations(settings) {
     scrapeEnabled: saved.preferences?.scrapeEnabled ?? scraperConfigured,
     refreshMode: refreshModes.includes(saved.preferences?.refreshMode)
       ? saved.preferences.refreshMode : defaultKomgaRefreshMode,
+    scrapeOptions: parseScrapeOptions(saved.preferences?.scrapeOptions) ?? defaultScrapeOptions,
   })
   const status = () => ({
     komga: {
@@ -115,7 +118,7 @@ export async function loadIntegrations(settings) {
         return true
       }
       try {
-        const { action, url: address, apiKey, scrapeEnabled, refreshMode, sourceMode, accessToken, clearAccessToken } = await readBody(req)
+        const { action, url: address, apiKey, scrapeEnabled, refreshMode, scrapeOptions, sourceMode, accessToken, clearAccessToken } = await readBody(req)
         if (action === 'save-komga') {
           let target
           try { target = normalizeKomgaUrl(address) } catch { /* invalid URL */ }
@@ -147,8 +150,16 @@ export async function loadIntegrations(settings) {
             sendError(res, 400, 'INVALID_KOMGA_PREFERENCES', '请选择有效的刮削开关和书库刷新方式。')
             return true
           }
+          const options = scrapeOptions === undefined ? undefined : parseScrapeOptions(scrapeOptions)
+          if (options === null || (!managed && options &&
+              (options.sortTitle || options.addLocalVersion || options.seriesCover || options.bookCover))) {
+            sendError(res, 400, 'INVALID_SCRAPE_OPTIONS', '请检查匹配分数、书库规则和内置刮削开关。')
+            return true
+          }
           await update(async () => {
-            const next = { ...saved, preferences: { scrapeEnabled, refreshMode } }
+            const next = { ...saved, preferences: {
+              scrapeEnabled, refreshMode, scrapeOptions: options ?? preferences().scrapeOptions,
+            } }
             await atomicWriteJson(file, next)
             saved = next
           })

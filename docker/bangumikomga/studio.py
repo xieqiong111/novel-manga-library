@@ -2,6 +2,7 @@
 
 import json
 import os
+import string
 import sys
 import time
 from pathlib import Path
@@ -12,12 +13,14 @@ if __name__ == "__main__":
     sys.stdout = sys.stderr
 
 import requests
+from pypinyin import Style, slug
 from zhconv import convert
 
 from api.bangumi_api import BangumiArchiveDataSource
 from api.bangumi_model import SubjectPlatform
 from bangumi_archive.local_archive_searcher import parse_infobox
 from core.process_metadata import set_komga_book_metadata, set_komga_series_metadata
+from corpus.vocabulary import ALL_PUBLISHERS
 from tools.resort_search_results_list import compute_name_score_by_fuzzy
 
 PLATFORMS = {"novel": SubjectPlatform.Novel, "manga": SubjectPlatform.Comic}
@@ -129,7 +132,7 @@ def search(bangumi, query, kind, scope):
     return {"candidates": sorted(found, key=lambda row: row["score"], reverse=True)[:10], **bangumi.provenance}
 
 
-def metadata(bangumi, subject_id, kind, scope):
+def metadata(bangumi, subject_id, kind, scope, options):
     subject = bangumi.get_subject_metadata(subject_id)
     if subject.get("id") != subject_id or not matches(subject, kind, scope):
         raise ApiError(422, "BANGUMI_TYPE_MISMATCH", "Bangumi 条目与选择的类型或系列／单册范围不符。")
@@ -151,7 +154,24 @@ def metadata(bangumi, subject_id, kind, scope):
         converted = set_komga_book_metadata(subject_id, 0, "", BookSource())
         names = ("summary", "authors", "releaseDate", "tags", "links")
     patch = {name: getattr(converted, name) for name in names}
-    return {"subject": candidate(subject), "metadata": patch, **bangumi.provenance}
+    if scope == "series":
+        local_name = options.get("localName") or ""
+        title = patch["title"] or ""
+        if options.get("sortTitle") and local_name and title and local_name[0] not in string.ascii_letters:
+            initial = title[0] if title[0] in string.ascii_letters else slug(
+                title[0], style=Style.FIRST_LETTER, separator="", errors="ignore",
+            )
+            if initial:
+                patch["titleSort"] = initial.upper() + local_name
+        if options.get("addLocalVersion"):
+            publisher = next((name for name in ALL_PUBLISHERS if name in local_name), None)
+            if publisher:
+                patch["localVersion"] = publisher
+    result = {"subject": candidate(subject), "metadata": patch, **bangumi.provenance}
+    if result["source"] == "bangumi-live" and options.get("includeCover"):
+        images = subject.get("images") or {}
+        result["coverUrl"] = images.get("large") or images.get("common")
+    return result
 
 
 def configured_source(mode, token):
@@ -178,7 +198,7 @@ def dispatch(bangumi, operation, params):
         subject_id = params.get("subjectId")
         if type(subject_id) is not int or not 1 <= subject_id <= 9999999999:
             raise ApiError(400, "INVALID_SUBJECT_ID", "请填写有效的 Bangumi 条目 ID。")
-        return metadata(bangumi, subject_id, kind, scope)
+        return metadata(bangumi, subject_id, kind, scope, params)
     raise ApiError(404, "NOT_FOUND", "未知操作。")
 
 
