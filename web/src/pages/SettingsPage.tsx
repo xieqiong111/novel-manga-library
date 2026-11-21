@@ -2,6 +2,7 @@ import { IntegrationSettings } from '@/components/layout/IntegrationSettings'
 import { DownloadFolders } from '@/components/layout/DownloadFolders'
 import { MangaHealthPanel } from '@/components/manga/MangaHealthPanel'
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import type { ReactNode } from 'react'
 import { Database, Info, Palette, Save, Server, ShieldCheck, SlidersHorizontal, Trash2 } from 'lucide-react'
 import { Badge, Button, Card, SectionTitle } from '@/components/common/ui'
@@ -62,6 +63,7 @@ export function SettingsPage() {
         }
         actions={
           <>
+            <Link to="/settings/scraping" className="rounded-lg px-3 py-2 text-sm text-accent hover:bg-accent-soft">刮削设置</Link>
             <Badge tone={IS_LIVE ? 'green' : 'amber'} className="h-7 px-3">{IS_LIVE ? DEMO.label : '未持久化'}</Badge>
             {(!IS_LIVE || legacyToken) && <Button
               variant="primary"
@@ -230,14 +232,14 @@ export function SettingsPage() {
             </p>
             <div className="mt-3 flex items-start gap-1.5 rounded-[8px] bg-surface-soft px-2.5 py-2 text-[9.5px] leading-relaxed text-ink-muted">
               <Info className="mt-[1px] h-3 w-3 shrink-0 text-[#C4B5FB]" />
-              轻小说自动追更、EPUB 导入与设置持久化仍为占位。
+              轻小说自动追更仍为占位。下载并发与连接参数由部署配置控制。
             </div>
           </Card>
 
           <Card className="p-5">
             <SectionTitle title="维护入口" className="[&_h2]:text-[17px]" />
             <div className="mt-3 space-y-2">
-              <a href="https://github.com/xieqiong111/dsh-plugin-lightnovel" target="_blank" rel="noreferrer" className="flex items-center gap-2 rounded-[9px] border border-line px-3 py-2 text-[10.5px] text-ink-soft transition hover:border-accent-line hover:text-accent">
+              <a href="https://github.com/xieqiong111/novel-manga-library" target="_blank" rel="noreferrer" className="flex items-center gap-2 rounded-[9px] border border-line px-3 py-2 text-[10.5px] text-ink-soft transition hover:border-accent-line hover:text-accent">
                 <Database className="h-3.5 w-3.5 text-accent" />
                 GitHub 仓库
               </a>

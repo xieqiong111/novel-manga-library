@@ -7,6 +7,7 @@ import {
   Download,
   Github,
   Globe2,
+  FileSearch,
   Home,
   RefreshCw,
   Search,
@@ -29,8 +30,9 @@ const workspaceLinks = [
 ]
 
 const systemLinks = [
-  { to: '/settings', label: '系统设置', icon: Settings2 },
-  { to: 'https://github.com/xieqiong111/dsh-plugin-lightnovel', label: 'GitHub 项目', icon: Github, external: true },
+  { to: '/settings', label: '系统设置', icon: Settings2, end: true },
+  { to: '/settings/scraping', label: '刮削', icon: FileSearch, nested: true },
+  { to: 'https://github.com/xieqiong111/novel-manga-library', label: 'GitHub 项目', icon: Github, external: true },
 ]
 
 export function Sidebar({ mobileOpen, onClose }: { mobileOpen: boolean; onClose: () => void }) {
@@ -141,6 +143,7 @@ function NavItem({
   external,
   active,
   badgeCount,
+  nested,
 }: {
   to: string
   label: string
@@ -149,6 +152,7 @@ function NavItem({
   external?: boolean
   active?: boolean
   badgeCount?: number
+  nested?: boolean
 }) {
   const content = (
     <>
@@ -171,7 +175,8 @@ function NavItem({
   )
 
   const base = cn(
-    'group flex h-[46px] items-center gap-3 rounded-[13px] px-3.5 transition-all duration-200',
+    'group flex items-center gap-3 rounded-[13px] px-3.5 transition-all duration-200',
+    nested ? 'ml-5 h-9' : 'h-[46px]',
     active
       ? 'bg-[linear-gradient(90deg,#8B6BF0_0%,#7A5AE7_55%,#6C4AD9_100%)] shadow-[0_12px_26px_-12px_rgba(124,92,232,0.9)] ring-1 ring-inset ring-white/15'
       : 'hover:bg-white/[0.055]',

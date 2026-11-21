@@ -45,6 +45,14 @@ function candidate(value) {
   }
 }
 
+function provenance(data) {
+  if (data.source === 'bangumi-live') return { source: 'bangumi-live' }
+  if (data.source === 'bangumi-archive') {
+    return { source: 'bangumi-archive', archiveVersion: text(data.archiveVersion, 40) || null }
+  }
+  return {}
+}
+
 function appendUnique(current, items, key) {
   const existing = Array.isArray(current) ? current : []
   const seen = new Set(existing.map(key))
@@ -111,27 +119,34 @@ function fingerprint(metadata, patch) {
   return JSON.stringify([...new Set(['links', ...Object.keys(patch)])].map((key) => [key, metadata[key], metadata[key + 'Lock']]))
 }
 
-export function createBangumiKomga({ url, komga, scanAfterApply, fetchImpl = fetch }) {
+export function createBangumiKomga({ url, requestMetadata, komga, scanAfterApply, fetchImpl = fetch }) {
   const previews = new Map()
   const writes = new Set()
   let active = 0
 
-  async function adapter(path, parameters) {
-    if (!url) throw new MetadataError(503, 'BANGUMIKOMGA_UNCONFIGURED', '尚未启用 BangumiKomga 服务。')
-    let base
-    try { base = normalizeKomgaUrl(url) } catch {
-      throw new MetadataError(503, 'BANGUMIKOMGA_CONFIGURATION', 'BangumiKomga 服务地址无效。')
-    }
-    if (!base) throw new MetadataError(503, 'BANGUMIKOMGA_CONFIGURATION', 'BangumiKomga 服务地址无效。')
+  async function adapter(operation, parameters) {
     try {
-      const response = await fetchImpl(`${base}/${path}?${new URLSearchParams(parameters)}`, {
-        redirect: 'error', signal: AbortSignal.timeout(16000), headers: { accept: 'application/json' },
-      })
-      const data = await readAdapterJson(response)
-      if (!response.ok) {
-        const status = [404, 422, 429, 502, 504].includes(response.status) ? response.status : 502
+      let status, data
+      if (requestMetadata) {
+        const reply = await requestMetadata(operation, parameters)
+        status = reply.status
+        data = reply.payload
+      } else {
+        let base
+        try { base = normalizeKomgaUrl(url) } catch {
+          throw new MetadataError(503, 'BANGUMIKOMGA_CONFIGURATION', 'BangumiKomga 服务地址无效。')
+        }
+        if (!base) throw new MetadataError(503, 'BANGUMIKOMGA_CONFIGURATION', 'BangumiKomga 服务地址无效。')
+        const response = await fetchImpl(`${base}/${operation}?${new URLSearchParams(parameters)}`, {
+          redirect: 'error', signal: AbortSignal.timeout(16000), headers: { accept: 'application/json' },
+        })
+        status = response.status
+        data = await readAdapterJson(response)
+      }
+      if (status !== 200) {
+        const mappedStatus = [404, 422, 429, 502, 503, 504].includes(status) ? status : 502
         const code = /^BANGUMI_[A-Z_]+$/.test(data?.error?.code) ? data.error.code : 'BANGUMIKOMGA_HTTP_ERROR'
-        throw new MetadataError(status, code, text(data?.error?.message, 200) || 'BangumiKomga 请求失败。')
+        throw new MetadataError(mappedStatus, code, text(data?.error?.message, 200) || 'BangumiKomga 请求失败。')
       }
       return data
     } catch (error) {
@@ -157,7 +172,7 @@ export function createBangumiKomga({ url, komga, scanAfterApply, fetchImpl = fet
     }
     const patch = changes(target.metadata, data.metadata, type.scope, subject)
     const fields = Object.keys(patch)
-    const result = { ...type, id, seriesId: target.seriesId, name: target.name, subject,
+    const result = { ...type, ...provenance(data), id, seriesId: target.seriesId, name: target.name, subject,
       changes: Object.fromEntries(fields.map((key) => [key, { before: target.metadata[key] ?? null, after: patch[key] }])),
     }
     if (!fields.length) return { ...result, previewId: null }
@@ -199,7 +214,7 @@ export function createBangumiKomga({ url, komga, scanAfterApply, fetchImpl = fet
   }
 
   return async function run(action, body) {
-    if (!url) throw new MetadataError(503, 'BANGUMIKOMGA_UNCONFIGURED', '尚未启用 BangumiKomga 服务。')
+    if (!url && !requestMetadata) throw new MetadataError(503, 'BANGUMIKOMGA_UNCONFIGURED', '尚未启用 BangumiKomga 服务。')
     if (active >= 4) throw new MetadataError(429, 'METADATA_BUSY', '元数据服务繁忙，请稍后重试。')
     active += 1
     try {
@@ -217,7 +232,7 @@ export function createBangumiKomga({ url, komga, scanAfterApply, fetchImpl = fet
       const type = selection(body)
       const data = await adapter('search', { ...type, query })
       if (!Array.isArray(data?.candidates)) throw new MetadataError(502, 'INVALID_METADATA_RESPONSE', 'BangumiKomga 返回了无效的搜索结果。')
-      return { ...type, candidates: data.candidates.slice(0, 10).map(candidate) }
+      return { ...type, ...provenance(data), candidates: data.candidates.slice(0, 10).map(candidate) }
     } finally {
       active -= 1
     }

@@ -8,11 +8,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/xieqiong111/dsh-plugin-lightnovel.git"
+    "url": "git+https://github.com/xieqiong111/novel-manga-library.git"
   },
-  "homepage": "https://github.com/xieqiong111/dsh-plugin-lightnovel#readme",
+  "homepage": "https://github.com/xieqiong111/novel-manga-library#readme",
   "bugs": {
-    "url": "https://github.com/xieqiong111/dsh-plugin-lightnovel/issues"
+    "url": "https://github.com/xieqiong111/novel-manga-library/issues"
   },
   "keywords": [
     "dsh-plugin",

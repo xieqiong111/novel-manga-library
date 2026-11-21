@@ -15,6 +15,7 @@ const routeMeta: Record<string, { group: string; title: string; eyebrow?: string
   '/sources': { group: '资源源管理', title: '资源源管理' },
   '/auto-update': { group: '自动追更', title: '自动追更' },
   '/stats': { group: '统计分析', title: '统计分析' },
+  '/settings/scraping': { group: '系统设置', title: '刮削' },
   '/settings': { group: '系统设置', title: '系统设置' },
 }
 
@@ -67,7 +68,7 @@ export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
         </span>
 
         <a
-          href="https://github.com/xieqiong111/dsh-plugin-lightnovel"
+          href="https://github.com/xieqiong111/novel-manga-library"
           target="_blank"
           rel="noreferrer"
           className="hidden items-center gap-1.5 rounded-full px-3 py-[6px] text-[11.5px] font-medium text-ink-soft transition hover:bg-accent-soft hover:text-accent sm:inline-flex"

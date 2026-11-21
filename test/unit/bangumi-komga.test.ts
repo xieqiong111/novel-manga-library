@@ -47,12 +47,12 @@ function fixture() {
     expect(init.redirect).toBe('error')
     expect(url.origin).toBe('http://bangumikomga:8091')
     expect(init.headers).not.toHaveProperty('authorization')
-    if (url.pathname === '/search') return Response.json({ candidates: [subject] })
+    if (url.pathname === '/search') return Response.json({ candidates: [subject], source: 'bangumi-archive', archiveVersion: '2026-11-17T21:04:20Z' })
     const scope = url.searchParams.get('scope')
     const metadata = scope === 'series'
       ? { title: '测试作品', summary: '刮削简介', tags: ['奇幻'], titleSort: 'ignored' }
       : { summary: '本卷简介', number: '99', numberSort: 99, authors: [{ name: '作者', role: 'writer' }] }
-    return Response.json({ subject, metadata })
+    return Response.json({ subject, metadata, source: 'bangumi-archive', archiveVersion: '2026-11-17T21:04:20Z' })
   })
   const run = createBangumiKomga({ url: 'http://bangumikomga:8091', komga: () => komga, fetchImpl: adapterFetch })
   return { run, state, adapterFetch, patchSeries, patchBook, komga, scan }
@@ -63,8 +63,10 @@ describe('BangumiKomga metadata', () => {
     const { run, patchSeries } = fixture()
     expect(await run('search', { kind: 'manga', scope: 'series', query: '測試作品' })).toMatchObject({
       candidates: [{ id: subject.id, nameCn: subject.nameCn }],
+      source: 'bangumi-archive', archiveVersion: '2026-11-17T21:04:20Z',
     })
     const preview = await run('preview', seriesInput)
+    expect(preview).toMatchObject({ source: 'bangumi-archive', archiveVersion: '2026-11-17T21:04:20Z' })
     expect(preview.changes).toMatchObject({ title: { before: '本地标题', after: '测试作品' } })
     expect(preview.changes).not.toHaveProperty('summary')
     expect(patchSeries).not.toHaveBeenCalled()

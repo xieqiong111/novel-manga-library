@@ -310,7 +310,7 @@ export function SourcesPage() {
       <div className="mt-5 flex items-center justify-between rounded-[12px] border border-line bg-surface px-4 py-3 text-[10px] text-ink-muted">
         <span>源规则维护文档</span>
         <a
-          href="https://github.com/xieqiong111/dsh-plugin-lightnovel"
+          href="https://github.com/xieqiong111/novel-manga-library"
           target="_blank"
           rel="noreferrer"
           className="inline-flex items-center gap-1 text-accent hover:underline"

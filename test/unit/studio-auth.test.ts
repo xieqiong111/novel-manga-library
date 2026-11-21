@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { expect, it } from 'vitest'
@@ -73,7 +73,15 @@ it('scopes the DSH credential and never returns stored secrets', async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), 'studio-integration-'))
   const auth = openStudioAuth({ config: { dataDir }, setupCode: 'fixture-secret-setup' })
   try {
-    const settings = { config: { dataDir }, auth, token: '', komgaAllowedUrls: ['http://komga:25600'] }
+    const archive = path.join(dataDir, 'archive')
+    await mkdir(archive)
+    await writeFile(path.join(archive, 'subject.jsonlines'), '')
+    await writeFile(path.join(archive, 'subject-relations.jsonlines'), '')
+    await writeFile(path.join(archive, 'archive_update_time.json'), '{"last_updated":"2026-11-17T21:04:20Z"}')
+    const settings = {
+      config: { dataDir }, auth, token: '', komgaAllowedUrls: ['http://komga:25600'],
+      bangumiKomgaScript: '/fixture/converter.py', bangumiArchiveDir: archive,
+    }
     const integrations = await loadIntegrations(settings)
     const api = createApi({ dartAvailable: true }, { ...settings, integrations }, { warn() {} })
     async function send(method: string, target: string, data?: object, cookie = '', bearer = '') {
@@ -93,6 +101,18 @@ it('scopes the DSH credential and never returns stored secrets', async () => {
     const route = '/api/settings/integrations'
     const before = await (await send('GET', route, undefined, cookie)).json()
     expect(before.preferences).toEqual({ scrapeEnabled: false, scraperConfigured: false, refreshMode: 'after-sync' })
+    expect(before.bangumi).toEqual({
+      managed: true, archiveAvailable: true, archiveVersion: '2026-11-17T21:04:20.000Z',
+      sourceMode: 'archive', hasAccessToken: false, hasSavedAccessToken: false,
+    })
+    const bangumi = { action: 'save-bangumi-settings', sourceMode: 'live', accessToken: 'fake-bangumi.credential' }
+    expect((await send('POST', route, bangumi)).status).toBe(401)
+    const configured = await (await send('POST', route, bangumi, cookie)).json()
+    expect(configured.bangumi).toMatchObject({ sourceMode: 'live', hasSavedAccessToken: true })
+    expect(JSON.stringify(configured)).not.toContain(bangumi.accessToken)
+    expect((await loadIntegrations(settings))?.bangumi).toEqual({ sourceMode: 'live', accessToken: bangumi.accessToken })
+    const cleared = await (await send('POST', route, { action: bangumi.action, sourceMode: 'archive', clearAccessToken: true }, cookie)).json()
+    expect(cleared.bangumi).toMatchObject({ sourceMode: 'archive', hasAccessToken: false, hasSavedAccessToken: false })
     const preferences = { action: 'save-komga-preferences', scrapeEnabled: true, refreshMode: 'manual' }
     expect((await send('POST', route, preferences)).status).toBe(401)
     expect((await send('POST', route, { ...preferences, scrapeEnabled: 'true' }, cookie)).status).toBe(400)

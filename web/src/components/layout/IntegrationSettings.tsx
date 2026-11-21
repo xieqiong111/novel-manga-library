@@ -4,12 +4,10 @@ import { useAsync } from '@/hooks/useAsync'
 import { apiFetch } from '@/services/runtime'
 import { useToast } from '@/components/common/Toast'
 
-type RefreshMode = 'manual' | 'after-sync' | 'after-sync-or-scrape'
-type IntegrationAction = 'save-komga' | 'save-komga-preferences' | 'rotate-dsh' | 'revoke-dsh'
+type IntegrationAction = 'save-komga' | 'rotate-dsh' | 'revoke-dsh'
 
 interface IntegrationStatus {
   komga: { url: string; allowedUrls: string[]; hasKey: boolean }
-  preferences: { scrapeEnabled: boolean; scraperConfigured: boolean; refreshMode: RefreshMode }
   dsh: { active: boolean; createdAt: string | null }
   token?: string
 }
@@ -30,9 +28,6 @@ function IntegrationForm({ initial }: { initial: IntegrationStatus }) {
   const [url, setUrl] = useState(initial.komga.allowedUrls.includes(initial.komga.url)
     ? initial.komga.url : initial.komga.allowedUrls[0] ?? '')
   const [apiKey, setApiKey] = useState('')
-  const [scrapeEnabled, setScrapeEnabled] = useState(initial.preferences.scrapeEnabled)
-  const [refreshMode, setRefreshMode] = useState<RefreshMode>(initial.preferences.refreshMode)
-  const preferencesChanged = scrapeEnabled !== status.preferences.scrapeEnabled || refreshMode !== status.preferences.refreshMode
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [token, setToken] = useState('')
@@ -42,8 +37,7 @@ function IntegrationForm({ initial }: { initial: IntegrationStatus }) {
     setBusy(true)
     setError('')
     try {
-      const fields = action === 'save-komga' ? { url, apiKey: apiKey.trim() }
-        : action === 'save-komga-preferences' ? { scrapeEnabled, refreshMode } : {}
+      const fields = action === 'save-komga' ? { url, apiKey: apiKey.trim() } : {}
       const next = await apiFetch<IntegrationStatus>(endpoint, {
         method: 'POST', body: JSON.stringify({ action, ...fields }),
       })
@@ -51,8 +45,6 @@ function IntegrationForm({ initial }: { initial: IntegrationStatus }) {
       if (action === 'save-komga') {
         setApiKey('')
         toast({ tone: 'success', title: 'Komga 已验证并保存' })
-      } else if (action === 'save-komga-preferences') {
-        toast({ tone: 'success', title: 'Komga 操作设置已保存' })
       } else {
         setToken(next.token ?? '')
         setConfirm(null)
@@ -81,35 +73,6 @@ function IntegrationForm({ initial }: { initial: IntegrationStatus }) {
             onChange={(event) => setApiKey(event.target.value)} required disabled={!initial.komga.allowedUrls.length || busy} />
         </label>
         <Button type="submit" variant="primary" size="sm" disabled={busy || !apiKey.trim() || !url}>测试并保存</Button>
-      </form>
-      <form className="space-y-3 border-t border-line pt-4"
-        onSubmit={(event) => { event.preventDefault(); void update('save-komga-preferences') }}>
-        <h3 className="text-sm font-semibold text-ink">刮削与书库刷新</h3>
-        <div>
-          <label className="flex min-h-9 items-center gap-2 text-sm text-ink">
-            <input type="checkbox" role="switch" className="h-4 w-4 shrink-0 accent-accent"
-              checked={scrapeEnabled} onChange={(event) => setScrapeEnabled(event.target.checked)}
-              aria-describedby="bangumi-scrape-help" disabled={busy} />
-            启用 Bangumi 元数据刮削
-          </label>
-          <p id="bangumi-scrape-help" className="text-xs leading-relaxed text-ink-soft">
-            {status.preferences.scraperConfigured
-              ? '开启后，DSH 可搜索、预览和提交轻小说及漫画元数据。'
-              : '使用前还需部署 BangumiKomga 并为 DSH 配置专用密钥。'}
-          </p>
-        </div>
-        <label className="block text-xs text-ink-soft">自动刷新 Komga 书库
-          <select className={input} value={refreshMode} disabled={busy} aria-describedby="komga-refresh-help"
-            onChange={(event) => setRefreshMode(event.target.value as RefreshMode)}>
-            <option value="manual">仅手动刷新</option>
-            <option value="after-sync">同步路径后</option>
-            <option value="after-sync-or-scrape">同步路径或刮削写入后</option>
-          </select>
-        </label>
-        <p id="komga-refresh-help" className="text-xs leading-relaxed text-ink-soft">
-          自动刷新只提交所选书库的后台扫描。「同步 Komga 路径」中也可以手动刷新。
-        </p>
-        <Button type="submit" size="sm" variant="primary" disabled={busy || !preferencesChanged}>保存操作设置</Button>
       </form>
       <div className="space-y-3 border-t border-line pt-4">
         <h3 className="text-sm font-semibold text-ink">DSH 只读 API</h3>

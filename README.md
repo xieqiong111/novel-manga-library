@@ -27,14 +27,13 @@ Studio、Suwayomi、CBZ 归档容器可以独立部署。Studio 负责界面与 
 需要 Node.js 24.9 或更新版本。下面启动默认 Mock 模式，使用明确标注的演示数据。
 
 ```sh
-git clone https://github.com/xieqiong111/dsh-plugin-lightnovel.git
-cd dsh-plugin-lightnovel
-git switch feat/suwayomi-manga-studio
+git clone https://github.com/xieqiong111/novel-manga-library.git
+cd novel-manga-library
 npm --prefix web ci
 npm --prefix web run dev -- --host 127.0.0.1
 ```
 
-打开终端显示的本地预览地址，一般为 `http://127.0.0.1:5173/`。Studio 集成版本目前在 `feat/suwayomi-manga-studio` 分支。
+打开终端显示的本地预览地址，一般为 `http://127.0.0.1:5173/`。
 
 ### 部署真实服务
 
@@ -45,7 +44,7 @@ npm --prefix web run dev -- --host 127.0.0.1
 
 ### 在 DSH 中使用
 
-使用 **DSH 0.2.2-rc.1**。从功能分支构建后用 `npm pack` 生成插件包，再用 `dsh plugin --profile <名称> add <包路径>` 安装。
+使用 **DSH 0.2.2-rc.1**。从仓库默认分支构建后用 `npm pack` 生成插件包，再用 `dsh plugin --profile <名称> add <包路径>` 安装。
 
 - 轻小说从 `novel_search`、`novel_volumes` 开始，用 `novel_download` 创建任务、`novel_tasks` 查询状态。
 - 漫画从 `manga_search` 和 `manga_chapters` 开始，用 `manga_download` 下载指定章节。按卷归档使用 `manga_komga_download`，用 `manga_komga_status` 查询进度和实际写入的文件。

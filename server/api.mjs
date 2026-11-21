@@ -120,6 +120,7 @@ export function createApi(
   const scan = createKomgaScanner()
   const metadata = createBangumiKomga({
     url: settings.bangumiKomgaUrl,
+    requestMetadata: settings.bangumiWorker?.request,
     komga: currentKomga,
     scanAfterApply: async (client, libraryId) => settings.integrations?.preferences?.refreshMode === 'after-sync-or-scrape'
       ? await scan(client, libraryId)
@@ -316,7 +317,7 @@ export function createApi(
     const metadataRoute = /^\/api\/komga\/metadata\/(search|books|preview|apply)$/.exec(url.pathname)
     if (metadataRoute && req.method === 'POST') {
       try {
-        if (!settings.bangumiKomgaUrl || !settings.metadataTokenFile) {
+        if (!(settings.bangumiWorker || settings.bangumiKomgaUrl) || !settings.metadataTokenFile) {
           throw new HttpError(503, 'BANGUMIKOMGA_UNCONFIGURED', '请配置 BangumiKomga 服务和元数据密钥文件。')
         }
         let secret

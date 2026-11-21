@@ -26,10 +26,14 @@
 # token, host name or absolute private path here.
 services:
   web:
+    build:
+      context: ./docker/bangumikomga
+      args:
+        STUDIO_WEB_BASE: "${LN_WEB_IMAGE:-node:24-bookworm-slim}"
     # Debian slim, not Alpine: the prebuilt Dart AOT binary is linked against
     # glibc and cannot execute on musl. Use LN_WEB_IMAGE=dsh-plugin-lightnovel:1.0.0
     # to reuse an image that already ships Node + the Dart core.
-    image: "${LN_WEB_IMAGE:-node:24-bookworm-slim}"
+    image: "${LN_STUDIO_WEB_IMAGE:-novel-manga-library-web:local}"
     platform: "${LN_WEB_PLATFORM:-linux/amd64}"
     container_name: "${LN_WEB_CONTAINER_NAME:-lightnovel-studio-web}"
     # Node images have no entrypoint of their own; explicit node keeps the
@@ -80,7 +84,8 @@ services:
       LN_KOMGA_API_KEY: "${LN_KOMGA_API_KEY:-}"
       LN_KOMGA_USERNAME: "${LN_KOMGA_USERNAME:-}"
       LN_KOMGA_PASSWORD: "${LN_KOMGA_PASSWORD:-}"
-      LN_BANGUMIKOMGA_URL: "${LN_BANGUMIKOMGA_URL:-}"
+      BANGUMI_ACCESS_TOKEN: "${BANGUMI_ACCESS_TOKEN:-}"
+      BANGUMI_ARCHIVE_DIR: "${BANGUMI_ARCHIVE_DIR:-}"
       LN_STUDIO_METADATA_TOKEN_FILE: "${LN_STUDIO_METADATA_TOKEN_FILE:-}"
       LN_KOMGA_TIMEOUT_MS: "${LN_KOMGA_TIMEOUT_MS:-8000}"
 
@@ -130,22 +135,6 @@ services:
         max-size: "10m"
         max-file: "3"
 
-    networks:
-      - default
-
-  bangumikomga:
-    profiles: ["metadata"]
-    build:
-      context: ./docker/bangumikomga
-    platform: "${LN_WEB_PLATFORM:-linux/amd64}"
-    restart: unless-stopped
-    environment:
-      BANGUMI_ACCESS_TOKEN: "${BANGUMI_ACCESS_TOKEN:-}"
-    read_only: true
-    tmpfs:
-      - /app/logs:size=8m,mode=1777
-    security_opt:
-      - no-new-privileges:true
     networks:
       - default
 

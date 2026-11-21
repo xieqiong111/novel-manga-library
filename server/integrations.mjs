@@ -1,5 +1,5 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
-import { readFile } from 'node:fs/promises'
+import { access, readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { atomicWriteJson } from '../dist/util/json.js'
 import { createKomgaClient, normalizeKomgaUrl, readKomgaConfig } from './komga-client.mjs'
@@ -46,7 +46,28 @@ export async function loadIntegrations(settings) {
     pending = next.catch(() => undefined)
     return next
   }
-  const scraperConfigured = Boolean(settings.bangumiKomgaUrl && settings.metadataTokenFile)
+  const managed = Boolean(settings.bangumiKomgaScript && !settings.bangumiKomgaUrl)
+  const scraperConfigured = Boolean((managed || settings.bangumiKomgaUrl) && settings.metadataTokenFile)
+  let archiveAvailable = false
+  let archiveVersion = null
+  if (managed && settings.bangumiArchiveDir) {
+    const root = settings.bangumiArchiveDir
+    archiveAvailable = await Promise.all(['subject.jsonlines', 'subject-relations.jsonlines']
+      .map((name) => access(path.join(root, name)))).then(() => true, () => false)
+    if (archiveAvailable) {
+      try {
+        const stamp = JSON.parse(await readFile(path.join(root, 'archive_update_time.json'), 'utf8'))
+        if (typeof stamp.last_updated === 'string' && Number.isFinite(Date.parse(stamp.last_updated))) {
+          archiveVersion = new Date(stamp.last_updated).toISOString()
+        }
+      } catch { /* A source version is optional. */ }
+    }
+  }
+  const bangumi = () => ({
+    sourceMode: ['live', 'archive'].includes(saved.bangumi?.sourceMode)
+      ? saved.bangumi.sourceMode : archiveAvailable ? 'archive' : 'live',
+    accessToken: saved.bangumi?.accessToken || settings.bangumiAccessToken || '',
+  })
   const preferences = () => ({
     scrapeEnabled: saved.preferences?.scrapeEnabled ?? scraperConfigured,
     refreshMode: refreshModes.includes(saved.preferences?.refreshMode)
@@ -59,12 +80,17 @@ export async function loadIntegrations(settings) {
       hasKey: Boolean(saved.komga?.apiKey || environment.apiKey),
     },
     preferences: { ...preferences(), scraperConfigured },
+    bangumi: {
+      managed, archiveAvailable, archiveVersion, sourceMode: bangumi().sourceMode,
+      hasAccessToken: Boolean(bangumi().accessToken), hasSavedAccessToken: Boolean(saved.bangumi?.accessToken),
+    },
     dsh: { active: Boolean(saved.dsh?.digest), createdAt: saved.dsh?.createdAt ?? null },
   })
 
   return {
     get client() { return client },
     get preferences() { return preferences() },
+    get bangumi() { return bangumi() },
     authorizeDsh(req) {
       const key = /^Bearer (studio_dsh_[A-Za-z0-9_-]{43})$/i.exec(String(req.headers.authorization ?? ''))?.[1]
       return Boolean(key && /^[a-f0-9]{64}$/.test(saved.dsh?.digest ?? '')
@@ -89,7 +115,7 @@ export async function loadIntegrations(settings) {
         return true
       }
       try {
-        const { action, url: address, apiKey, scrapeEnabled, refreshMode } = await readBody(req)
+        const { action, url: address, apiKey, scrapeEnabled, refreshMode, sourceMode, accessToken, clearAccessToken } = await readBody(req)
         if (action === 'save-komga') {
           let target
           try { target = normalizeKomgaUrl(address) } catch { /* invalid URL */ }
@@ -123,6 +149,25 @@ export async function loadIntegrations(settings) {
           }
           await update(async () => {
             const next = { ...saved, preferences: { scrapeEnabled, refreshMode } }
+            await atomicWriteJson(file, next)
+            saved = next
+          })
+          sendJson(res, 200, status())
+        } else if (action === 'save-bangumi-settings') {
+          if (!managed) {
+            sendError(res, 409, 'BANGUMI_SETTINGS_EXTERNAL', '此部署没有内置 Bangumi 配置。')
+            return true
+          }
+          if (!['live', 'archive'].includes(sourceMode) || (sourceMode === 'archive' && !archiveAvailable) ||
+              (clearAccessToken !== undefined && typeof clearAccessToken !== 'boolean') ||
+              (accessToken !== undefined && (typeof accessToken !== 'string' || !/^[\x21-\x7e]{1,768}$/.test(accessToken))) ||
+              (clearAccessToken && accessToken !== undefined)) {
+            sendError(res, 400, 'INVALID_BANGUMI_SETTINGS', '请选择可用的数据源，并检查 Bangumi 令牌格式。')
+            return true
+          }
+          await update(async () => {
+            const token = clearAccessToken ? '' : (accessToken ?? saved.bangumi?.accessToken)
+            const next = { ...saved, bangumi: { sourceMode, ...(token ? { accessToken: token } : {}) } }
             await atomicWriteJson(file, next)
             saved = next
           })

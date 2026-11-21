@@ -30,6 +30,7 @@ import path from 'node:path'
 import { createApi } from './api.mjs'
 import { createSuwayomiClient } from './suwayomi-client.mjs'
 import { createKomgaClient } from './komga-client.mjs'
+import { startBangumiWorker } from './bangumi-worker.mjs'
 import { loadIntegrations } from './integrations.mjs'
 import { boot, readSettings } from './runtime.mjs'
 
@@ -130,6 +131,7 @@ if (settings.accountAuth) {
   settings.auth = openStudioAuth(settings)
 }
 settings.integrations = await loadIntegrations(settings)
+settings.bangumiWorker = await startBangumiWorker(settings, logger)
 const handleApi = createApi(runtime, settings, logger, mangaClient, komgaClient)
 
 const server = http.createServer((req, res) => {
@@ -172,6 +174,7 @@ async function shutdown(signal) {
   shuttingDown = true
   logger.info('webapi', 'shutdown', { signal })
   server.close()
+  settings.bangumiWorker?.stop()
   await runtime.dispose()
   settings.auth?.close()
   process.exit(0)
