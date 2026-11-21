@@ -1,5 +1,5 @@
 import { defineTool } from '@deepseek-ai/dsh-tools';
-import { studioDelegated, studioJob } from '../../server/studio-jobs.mjs';
+import { searchStudioWork, studioDelegated } from '../../server/studio-jobs.mjs';
 import { jsonOutput, ok, runTool } from './common.js';
 /**
  * Requirement #3/#4: multi-source keyword search with alias/author matching and
@@ -14,6 +14,7 @@ export function registerNovelSearch(ctx, runtime) {
             'Traditional and Simplified Chinese queries are matched, and results are ranked and deduplicated.',
             'Returns structured hits containing title, author, coverUrl, description, source, sourceUrl, status/statusText, lastUpdated, volumeCount, tags and score.',
             'Use the returned `id` (sourceId:bookId) with novel_details, novel_volumes and novel_download.',
+            'Studio looks up the work in Bangumi first, searches using its official title, then tries its aliases. Keep bangumi.id with the source result; pass it as bangumiSubjectId to novel_download.',
             'Only public pages are accessed, with robots.txt and per-host rate limits honoured.',
         ].join(' '),
         parameters: {
@@ -34,12 +35,13 @@ export function registerNovelSearch(ctx, runtime) {
                 type: 'boolean',
                 description: 'Force a live source query even when the local index already has matches (default false).',
             },
+            bangumiSubjectId: { type: 'number', description: 'Confirmed Bangumi series ID when choosing among Bangumi candidates in Studio mode.' },
         },
         output: jsonOutput(),
         async execute(args) {
             return runTool(runtime, 'novel_search', async () => {
-                const outcome = studioDelegated() ? await studioJob('/api/novels', {
-                    query: { ...args, sources: args.sources?.join(',') },
+                const outcome = studioDelegated() ? await searchStudioWork('novel', {
+                    ...args, sources: args.sources?.join(','),
                 }) : await runtime.search.search({
                     query: args.query,
                     sources: args.sources,
@@ -51,7 +53,7 @@ export function registerNovelSearch(ctx, runtime) {
                     ...outcome,
                     nextStep: outcome.results.length > 0
                         ? `Call novel_details with bookId "${outcome.results[0].id}" to see volumes.`
-                        : 'No matches. Try a shorter title, an alias, the author name, or searchMode=hybrid with refresh=true.',
+                        : ('notice' in outcome ? outcome.notice : 'No matches. Try a shorter title, an alias, the author name, or searchMode=hybrid with refresh=true.'),
                 });
             });
         },

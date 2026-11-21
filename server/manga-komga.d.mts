@@ -11,6 +11,8 @@ export interface MangaArchiveSelection {
 export interface MangaArchiveStatus {
   available: boolean
   archiveMode?: 'volume' | 'chapter' | 'unsupported'
+  bangumiSubjectId?: number
+  folderTitle?: string
   volumes: Array<{
     number: number
     chapterIds?: string[]
@@ -38,6 +40,7 @@ type MangaArchiveDownload = Omit<Awaited<ReturnType<SuwayomiClient['download']>>
   queue?: SuwayomiTask[]
   filename: string | null
   archived?: Array<{ chapterId: string; filename: string }>
+  bangumi?: { id: number; title: string }
 }
 
 export interface MangaKomga {

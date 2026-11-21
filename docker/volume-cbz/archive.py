@@ -51,6 +51,10 @@ class ArchiveError(Exception):
     pass
 
 
+class BangumiFolderConflict(ArchiveError):
+    pass
+
+
 class DownloadHistory:
     def __init__(self, root):
         self.root = root
@@ -116,7 +120,8 @@ class RejectRedirects(HTTPRedirectHandler):
 
 
 class Suwayomi:
-    def __init__(self, config):
+    def __init__(self, config, settings=None):
+        self.bindings = settings.parent / "bangumi-manga" if settings else None
         base = config.get("LN_SUWAYOMI_URL") or config.get("SUWAYOMI_URL") or ""
         parsed = urlsplit(base)
         if (parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username is not None
@@ -207,6 +212,25 @@ class Suwayomi:
     def manga(self, manga_id):
         return self.graphql("query($id: Int!) { manga(id: $id) { id title sourceId } }", id=manga_id)["manga"]
 
+    def archive_identity(self, manga):
+        if not self.bindings:
+            return manga
+        identity = series_identity(manga)
+        file = self.bindings / f"{identity['mangaId']}.json"
+        if file.is_symlink() or self.bindings.is_symlink():
+            raise ArchiveError("invalid Bangumi binding file")
+        try:
+            with file.open("rb") as handle:
+                binding = json.loads(handle.read(4096))
+        except FileNotFoundError:
+            return manga
+        if (not isinstance(binding, dict) or binding.get("mangaId") != str(identity["mangaId"])
+                or binding.get("sourceId") != str(identity["sourceId"]) or type(binding.get("subjectId")) is not int
+                or not 0 < binding["subjectId"] < 10**10 or not isinstance(binding.get("title"), str)
+                or not binding["title"].strip() or len(binding["title"]) > 300):
+            raise ArchiveError("invalid Bangumi binding")
+        return {**manga, "bangumi": binding}
+
     def manga_chapters(self, manga_id):
         return self.chapters({"query": "mangaId: $id", "id": manga_id}, CHAPTER_FIELDS)
 
@@ -269,8 +293,14 @@ def series_identity(manga):
 
 
 def series_title(manga):
-    title = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", manga["title"]).strip(" .")
-    return title.encode()[:160].decode(errors="ignore").rstrip(" .") or "漫画"
+    title = re.sub(r'[<>:"/\\|?*\x00-\x1f\x7f]', "_", manga.get("bangumi", {}).get("title", manga["title"])).strip(" .")
+    title = title.encode()[:160].decode(errors="ignore").rstrip(" .")
+    if "bangumi" in manga:
+        if not title:
+            raise ArchiveError("Bangumi title cannot be used as a folder name")
+        if re.match(r"^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)", title, re.I):
+            title = "_" + title
+    return title or "漫画"
 
 
 def read_series_marker(folder):
@@ -284,8 +314,7 @@ def read_series_marker(folder):
         return None
 
 
-def series_directory(root, manga):
-    identity = series_identity(manga)
+def matching_series_folders(root, identity):
     suffix = f" [{identity['sourceId']}-{identity['mangaId']}]"
     matches = []
     for entry in root.iterdir():
@@ -296,6 +325,13 @@ def series_directory(root, manga):
             continue
         if entry.is_dir() and (legacy or read_series_marker(entry) == identity):
             matches.append(entry)
+    return matches
+
+
+def series_directory(root, manga):
+    identity = series_identity(manga)
+    suffix = f" [{identity['sourceId']}-{identity['mangaId']}]"
+    matches = matching_series_folders(root, identity)
     if len(matches) > 1:
         raise ArchiveError(f"ambiguous archive directory for manga {identity['mangaId']}")
     if matches:
@@ -324,9 +360,11 @@ def prepare_series_folder(folder, manga):
 
 def comic_info(manga, title, number, page_count):
     info = ElementTree.Element("ComicInfo")
-    for tag, value in [("Series", manga["title"]), ("Title", title),
+    for tag, value in [("Series", manga.get("bangumi", {}).get("title", manga["title"])), ("Title", title),
                        ("Number", number), ("PageCount", str(page_count))]:
         ElementTree.SubElement(info, tag).text = value
+    if "bangumi" in manga:
+        ElementTree.SubElement(info, "Web").text = f"https://bgm.tv/subject/{manga['bangumi']['subjectId']}"
     return ElementTree.tostring(info, encoding="utf-8", xml_declaration=True)
 
 
@@ -384,6 +422,14 @@ def storage_roots(root, settings):
 
 
 def archive_directories(root, previous, manga):
+    if "bangumi" in manga:
+        identity = series_identity(manga)
+        destination = root / series_title(manga)
+        if (destination.is_symlink() or (destination.exists() and
+                (not destination.is_dir() or read_series_marker(destination) != identity))):
+            raise BangumiFolderConflict("the Bangumi destination belongs to a different manga or is unmanaged")
+        return list(dict.fromkeys([destination, *(folder for parent in (root, *previous)
+                                                   for folder in matching_series_folders(parent, identity))]))
     return [series_directory(parent, manga) for parent in (root, *previous)]
 
 
@@ -429,6 +475,8 @@ def archive_catalog(client, root, manga_id, previous=(), *, offset=0, limit=20, 
     manga = client.manga(manga_id)
     if not manga or str(manga["sourceId"]) == "0":
         return {"volumes": [], "archiveMode": "unsupported", "chapters": [], "chapterCount": 0}
+    if isinstance(client, Suwayomi):
+        manga = client.archive_identity(manga)
     chapters = list(islice(client.manga_chapters(manga_id), CATALOG_LIMIT + 1))
     if len(chapters) > CATALOG_LIMIT:
         raise ArchiveError("chapter catalog exceeds lookup limit")
@@ -449,7 +497,11 @@ def archive_catalog(client, root, manga_id, previous=(), *, offset=0, limit=20, 
             "id": str(row["id"]), "name": row["name"], "number": number, "downloaded": row["isDownloaded"],
             **status,
         })
-    return {"volumes": [], "archiveMode": mode, "chapters": results, "chapterCount": len(standalone)}
+    result = {"volumes": [], "archiveMode": mode, "chapters": results, "chapterCount": len(standalone)}
+    if "bangumi" in manga:
+        result["bangumiSubjectId"] = manga["bangumi"]["subjectId"]
+        result["folderTitle"] = series_title(manga)
+    return result
 
 
 def catalog_selection(query):
@@ -520,6 +572,8 @@ def start_status_server(client, root, port, settings=None, archive_errors=None, 
                 self.wfile.write(body)
             except (BrokenPipeError, ConnectionResetError):
                 return
+            except BangumiFolderConflict:
+                self.send_error(409)
             except (ArchiveError, OSError, ValueError, TypeError, KeyError, sqlite3.Error):
                 self.send_error(503)
 
@@ -591,6 +645,8 @@ def run_once(client, root, previous=(), archive_errors=None, history=None):
         try:
             chapters = list(client.manga_chapters(manga_id))
             completed = [row for row in chapters if row["isDownloaded"]]
+            if isinstance(client, Suwayomi):
+                manga = client.archive_identity(manga)
             directories = archive_directories(root, previous, manga)
             legacy = legacy_volume_chapters(directories)
             if history:
@@ -675,7 +731,7 @@ def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     try:
         config = json.loads(args.connection_file.read_text()) if args.connection_file else os.environ
-        client = Suwayomi(config)
+        client = Suwayomi(config, args.settings_file)
         args.output.mkdir(parents=True, exist_ok=True)
         with (args.output / ".suwayomi-volume.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)

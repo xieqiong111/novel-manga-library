@@ -40,6 +40,10 @@ export function createMangaVolumeClient(value = process.env.LN_VOLUME_ARCHIVE_UR
         url.search = ''
         response = await fetch(url, init)
       }
+      if (response.status === 409) {
+        await response.body?.cancel()
+        throw new SuwayomiError('BANGUMI_FOLDER_CONFLICT', '同名文件夹已被其他漫画版本使用，请在网页切换保存位置。', 409)
+      }
       if (!response.ok) {
         await response.body?.cancel()
         throw new Error('Archive lookup failed')
@@ -51,12 +55,16 @@ export function createMangaVolumeClient(value = process.env.LN_VOLUME_ARCHIVE_UR
       if (result.archiveMode === undefined) return result.volumes
       if (!['volume', 'chapter', 'unsupported'].includes(result.archiveMode) ||
           !Number.isInteger(result.chapterCount) || result.chapterCount < 0 || result.chapterCount > 5000 ||
+          (result.bangumiSubjectId !== undefined && (!Number.isSafeInteger(result.bangumiSubjectId) ||
+            result.bangumiSubjectId <= 0 || typeof result.folderTitle !== 'string' || !result.folderTitle ||
+            result.folderTitle.startsWith('.') || /[/\\:\x00-\x1f\x7f]/.test(result.folderTitle))) ||
           !Array.isArray(result.chapters) || result.chapters.length > 100 ||
           result.chapters.length > result.chapterCount || !result.chapters.every(validChapter)) {
         throw new Error('Invalid chapter archive catalog')
       }
       return result
-    } catch {
+    } catch (error) {
+      if (error instanceof SuwayomiError) throw error
       throw new SuwayomiError('VOLUME_ARCHIVE_UNAVAILABLE', 'Komga 归档服务暂不可用。', 503)
     }
   }

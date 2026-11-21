@@ -273,6 +273,7 @@ it('routes native novel and manga jobs to Studio, uses its results, and never fa
   const taskId = 'task_0123456789abcdef'
   const entryId = 'lib_0123456789abcdef'
   const downloadPath = '/api/library/' + entryId + '/file'
+  const subjectId = 123
   const token = 'studio_jobs_' + 'a'.repeat(43)
   const tokenFile = path.join(dataDir, 'jobs-fixture.token')
   const taskFiles = await readdir(path.join(dataDir, 'tasks'))
@@ -285,15 +286,21 @@ it('routes native novel and manga jobs to Studio, uses its results, and never fa
     expect(init.headers).toMatchObject({ authorization: 'Bearer ' + token })
     expect(init.redirect).toBe('error')
     switch (init.method + ' ' + url.pathname + url.search) {
+      case 'GET /api/bangumi/title?kind=manga&query=' + encodeURIComponent('简称'):
+        return Response.json({ subject: { id: subjectId, title: '正式名称', aliases: ['简称'] }, candidates: [] })
+      case 'GET /api/manga/search?query=' + encodeURIComponent('正式名称') + '&type=SEARCH&page=1&offset=0&limit=20':
+        return Response.json({ mangas: [{ id: '77', title: '另一个作品' }] })
+      case 'GET /api/manga/search?query=' + encodeURIComponent('简称') + '&type=SEARCH&page=1&offset=0&limit=20':
+        return Response.json({ mangas: [{ id: '22', title: '简称' }] })
       case 'POST /api/tasks':
-        expect(JSON.parse(String(init.body))).toEqual({ bookId: 'fixture:star-voyage', volumes: '1' })
+        expect(JSON.parse(String(init.body))).toEqual({ bookId: 'fixture:star-voyage', volumes: '1', bangumiSubjectId: subjectId })
         return Response.json({ id: taskId, state: 'queued' }, { status: 201 })
       case 'GET /api/tasks/' + taskId:
         return Response.json({ id: taskId, state: 'completed', artifacts: [{ id: entryId, downloadPath }] })
       case 'GET /api/library/' + entryId:
         return Response.json({ id: entryId, downloadPath, integrity: 'ok' })
       case 'POST /api/manga/22/komga':
-        expect(JSON.parse(String(init.body))).toEqual({ chapterIds: ['101'] })
+        expect(JSON.parse(String(init.body))).toEqual({ chapterIds: ['101'], bangumiSubjectId: subjectId })
         return Response.json({ queued: ['101'], queue: [], chapterIds: ['101'] })
       case 'GET /api/manga/downloads?mangaId=22':
         return Response.json({ queue: [], history: [{ chapterId: '101', archive: { state: 'archived', file: '作品/第1话.cbz' } }] })
@@ -302,20 +309,22 @@ it('routes native novel and manga jobs to Studio, uses its results, and never fa
   })
   vi.stubGlobal('fetch', request)
   try {
-    expect(await call('novel_download', { bookId: 'fixture:star-voyage', volumes: '1' }))
+    expect(await call('manga_search', { query: '简称' })).toMatchObject({ ok: true,
+      bangumi: { id: subjectId, title: '正式名称' }, mangas: [{ id: '22' }], attemptedQueries: ['正式名称', '简称'] })
+    expect(await call('novel_download', { bookId: 'fixture:star-voyage', volumes: '1', bangumiSubjectId: subjectId }))
       .toMatchObject({ ok: true, executor: 'studio', taskId })
     expect(await call('novel_tasks', { action: 'get', taskId }))
       .toMatchObject({ ok: true, task: { state: 'completed', artifacts: [{ downloadPath }] } })
     expect(await call('novel_library', { action: 'get', id: entryId }))
       .toMatchObject({ ok: true, entry: { id: entryId, integrity: 'ok', downloadPath } })
-    expect(await call('manga_download', { mangaId: '22', chapterIds: ['101'] }))
+    expect(await call('manga_download', { mangaId: '22', chapterIds: ['101'], bangumiSubjectId: subjectId }))
       .toMatchObject({ ok: true, queued: ['101'] })
     expect(await call('manga_tasks', { mangaId: '22' }))
       .toMatchObject({ ok: true, executor: 'studio', history: [{ archive: { file: '作品/第1话.cbz' } }] })
     vi.stubEnv('LN_STUDIO_JOB_TOKEN_FILE', '')
     expect(await call('novel_download', { bookId: 'fixture:star-voyage', volumes: '1' }))
       .toMatchObject({ ok: false, error: { code: 'STUDIO_JOB_UNCONFIGURED', retryable: false } })
-    expect(request).toHaveBeenCalledTimes(5)
+    expect(request).toHaveBeenCalledTimes(8)
     expect(await readdir(path.join(dataDir, 'tasks'))).toEqual(taskFiles)
   } finally {
     vi.unstubAllEnvs()

@@ -1,8 +1,8 @@
 import { randomBytes } from 'node:crypto'
-import { Converter } from 'opencc-js'
 import { normalizeKomgaUrl } from './komga-client.mjs'
 import { bangumiCoverUrl, decodeBangumiCover, downloadBangumiCover } from './bangumi-cover.mjs'
 import { defaultScrapeOptions } from './scrape-options.mjs'
+import { bangumiTitleKey as titleKey } from './bangumi-title.mjs'
 
 export class MetadataError extends Error {
   constructor(status, code, message) {
@@ -18,9 +18,6 @@ const komgaId = (value) => typeof value === 'string' && /^[A-Za-z0-9_-]{1,200}$/
 const subjectId = (value) => Number.isSafeInteger(value) && value > 0 && value <= 9999999999
 const MAX_PREVIEWS = 32
 const PREVIEW_MS = 10 * 60 * 1000
-const simplify = Converter({ from: 't', to: 'cn' })
-const titleKey = (title) => simplify(title.normalize('NFKC')).toLowerCase().trim()
-  .replace(/\s+/gu, ' ').replace(/ *([\p{P}\p{S}]) */gu, '$1')
 const hasBangumiLink = (metadata) => Array.isArray(metadata.links) && metadata.links.some((link) =>
   /^(bangumi|cbl)$/i.test(link?.label ?? '') || /^https?:\/\/(bgm\.tv|bangumi\.tv|chii\.in)\/subject\//i.test(link?.url ?? ''))
 
@@ -303,7 +300,39 @@ export function createBangumiKomga({ url, requestMetadata, komga, getOptions, ge
     return { ...type, ...provenance(data), candidates }
   }
 
-  async function autoSeries({ libraryId, seriesId, kind }, ensureCurrent, connection) {
+  async function identity(body) {
+    const type = selection({ ...body, scope: 'series' })
+    async function subjectDetails(id) {
+      if (!subjectId(id)) throw new MetadataError(400, 'INVALID_BANGUMI_ID', '请填写有效的 Bangumi 系列条目 ID。')
+      const data = await adapter('metadata', { ...type, subjectId: id })
+      const subject = candidate(data?.subject)
+      if (subject.id !== id || !object(data.metadata)) {
+        throw new MetadataError(502, 'INVALID_METADATA_RESPONSE', 'Bangumi 返回的条目与请求不一致。')
+      }
+      const title = subject.nameCn || subject.name
+      const aliases = [...new Set([subject.name, ...(Array.isArray(data.metadata.alternateTitles)
+        ? data.metadata.alternateTitles.map((row) => text(row?.title, 200)) : [])])]
+        .filter((alias) => alias && alias !== title).slice(0, 12)
+      return { id, title, aliases, url: subject.url, ...provenance(data) }
+    }
+    if (body.subjectId !== undefined) return { subject: await subjectDetails(body.subjectId), candidates: [] }
+    const key = titleKey(text(body.query, 201))
+    const { candidates } = await search({ ...type, query: body.query }, 0)
+    const exact = candidates.filter(({ name, nameCn }) => [name, nameCn].some((name) => name && titleKey(name) === key))
+    if (exact.length === 1) return { subject: await subjectDetails(exact[0].id), candidates }
+    if (exact.length > 1) return { subject: null, candidates }
+    const aliases = []
+    for (const row of candidates.filter((row) => row.score >= 90).slice(0, 3)) {
+      const subject = await subjectDetails(row.id)
+      if (subject.aliases.some((alias) => titleKey(alias) === key)) aliases.push(subject)
+    }
+    if (aliases.length) return { subject: aliases.length === 1 ? aliases[0] : null, candidates }
+    const baseName = (name) => titleKey(name.split(/[~～：:（(]/u, 1)[0])
+    const short = candidates.filter(({ name, nameCn }) => [name, nameCn].some((title) => title && baseName(title) === key))
+    return { subject: short.length === 1 ? await subjectDetails(short[0].id) : null, candidates }
+  }
+
+  async function autoSeries({ libraryId, seriesId, kind, confirmedSubjectId }, ensureCurrent, connection) {
     const target = await komga().metadataTarget('series', seriesId)
     ensureCurrent()
     if (target.libraryId !== libraryId) throw new MetadataError(409, 'METADATA_CHANGED', '系列已移出所选书库。')
@@ -311,6 +340,11 @@ export function createBangumiKomga({ url, requestMetadata, komga, getOptions, ge
     checkLibrary(libraryId, libraries, kind)
     if (hasBangumiLink(target.metadata)) return { updated: false, reason: '已有 Bangumi 关联' }
     if (target.metadata.linksLock === true) return { updated: false, reason: '关联字段已锁定' }
+    if (subjectId(confirmedSubjectId)) {
+      const planned = await preview({ kind, scope: 'series', seriesId, subjectId: confirmedSubjectId }, target, connection)
+      return planned.previewId ? apply({ previewId: planned.previewId }, ensureCurrent)
+        : { updated: false, reason: '没有可写入的字段', cover: planned.cover }
+    }
     const query = String(target.metadata.title || target.name).trim()
     if (!query || query.length > 200) return { updated: false, reason: '系列标题无法用于匹配' }
     const key = titleKey(query)
@@ -342,6 +376,7 @@ export function createBangumiKomga({ url, requestMetadata, komga, getOptions, ge
     if (active >= 4) throw new MetadataError(429, 'METADATA_BUSY', '元数据服务繁忙，请稍后重试。')
     active += 1
     try {
+      if (action === 'identity') return await identity(body)
       if (action === 'books') {
         const page = body.page ?? 0
         if (!komgaId(body.seriesId) || !Number.isInteger(page) || page < 0 || page > 10000) {

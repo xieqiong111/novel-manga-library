@@ -37,6 +37,30 @@ function responseSink() {
 describe('Suwayomi BFF routes', () => {
   const logger = { warn: vi.fn(), error: vi.fn() }
 
+  it('requires the chapter exporter to confirm the Bangumi binding before a managed enqueue', async () => {
+    const catalog = { archiveMode: 'chapter', chapters: [{ id: '101', downloaded: false, filename: null }] }
+    const getVolumes = vi.fn(async () => catalog)
+    const bindBangumi = vi.fn(async () => ({ id: 123, title: '正式名称' }))
+    const client = { download: vi.fn(async () => ({ queued: ['101'], skipped: [] })) }
+    const api = createMangaApi(client, logger, { getVolumes, bindBangumi })
+    const route = '/api/manga/22/komga'
+    async function enqueue() {
+      const res = responseSink()
+      await api(request('POST', route, {
+        contentType: 'application/json', body: { chapterIds: ['101'], bangumiSubjectId: 123 },
+      }), res, new URL(route, 'http://localhost'), true)
+      return res
+    }
+    expect((await enqueue()).json()).toMatchObject({ error: { code: 'BANGUMI_ARCHIVE_UNCONFIRMED' } })
+    expect(client.download).not.toHaveBeenCalled()
+    getVolumes.mockResolvedValueOnce(catalog)
+      .mockResolvedValueOnce({ ...catalog, bangumiSubjectId: 123 } as typeof catalog)
+    const accepted = await enqueue()
+    expect(accepted.status).toBe(200)
+    expect(accepted.json()).toMatchObject({ queued: ['101'], bangumi: { id: 123, title: '正式名称' } })
+    expect(client.download).toHaveBeenCalledExactlyOnceWith({ mangaId: '22', chapterIds: ['101'] })
+  })
+
   it('shares the BFF token gate and serves manga routes only under the exact prefix', async () => {
     const client = { sources: vi.fn(async () => ({ sources: [{ id: '0', name: 'Local', lang: 'localsourcelang' }] })) }
     const api = createApi({ suwayomi: client }, { token: 'test-secret', corsOrigin: '', allowDelete: false }, logger as never, client as never)

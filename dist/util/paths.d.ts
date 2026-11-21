@@ -8,6 +8,8 @@ export declare function assertSafeRelative(relative: string): string;
 export declare function safeResolve(root: string, ...parts: string[]): string;
 /** Filesystem-safe single path segment derived from an untrusted book title. */
 export declare function sanitizeFileName(name: string, fallback?: string): string;
+/** Preserve the Bangumi display title and replace filesystem separators. */
+export declare function bangumiFolderName(title: string): string;
 export declare class UrlViolation extends Error {
     readonly code = "URL_VIOLATION";
     constructor(message: string);

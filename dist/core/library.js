@@ -1,11 +1,11 @@
 import { constants } from 'node:fs';
-import { copyFile, lstat, mkdir, rename, realpath, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { copyFile, lstat, mkdir, readdir, rename, realpath, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { folderWithin, readDownloadFolders } from './download-folders.js';
 import { verifyEpub } from './integrity.js';
 import { readJson } from '../util/json.js';
-import { safeResolve, sanitizeFileName } from '../util/paths.js';
+import { bangumiFolderName, safeResolve, sanitizeFileName } from '../util/paths.js';
 /** On-disk EPUB library with integrity verification and a portable index. */
 export class Library {
     libraryDir;
@@ -98,7 +98,7 @@ export class Library {
     async ingest(input) {
         await this.load();
         const integrity = await verifyEpub(input.artifact.path);
-        const base = sanitizeFileName(input.title, 'novel');
+        const base = input.bangumi ? bangumiFolderName(input.bangumi.title) : sanitizeFileName(input.title, 'novel');
         const volume = sanitizeFileName(input.artifact.volumeNames[0] ?? base, `${randomUUID().slice(0, 8)}.epub`);
         const relativePath = path.join(base, volume.endsWith('.epub') ? volume : `${volume}.epub`);
         const storageFolder = this.storage?.root
@@ -109,6 +109,35 @@ export class Library {
         await mkdir(series, { recursive: true });
         if (storageFolder !== undefined && !(await lstat(series)).isDirectory())
             throw new Error('Invalid novel series directory');
+        if (input.bangumi) {
+            if (!(await lstat(series)).isDirectory())
+                throw new Error('Invalid Bangumi novel destination');
+            const file = path.join(series, '.studio-novel.json');
+            const identity = { subjectId: input.bangumi.id, sourceId: input.sourceId, bookId: input.bookId };
+            const previous = await lstat(file).catch((error) => {
+                if (error.code !== 'ENOENT')
+                    throw error;
+                return null;
+            });
+            if (previous) {
+                const record = previous.isFile() ? await readJson(file, null) : null;
+                if (record?.subjectId !== identity.subjectId || record.sourceId !== identity.sourceId || record.bookId !== identity.bookId) {
+                    throw new Error('BANGUMI_FOLDER_CONFLICT: 此目录已被其他轻小说版本使用。');
+                }
+            }
+            else {
+                const current = [...this.entries.values()].filter((entry) => entry.storageFolder === storageFolder &&
+                    path.dirname(entry.relativePath) === base);
+                const tracked = new Set(current.flatMap((entry) => [
+                    path.basename(entry.relativePath), path.basename(entry.relativePath) + '.sha256',
+                ]));
+                if (current.some((entry) => entry.bookId !== input.bookId || entry.sourceId !== input.sourceId) ||
+                    (await readdir(series)).some((name) => !name.startsWith('.') && !tracked.has(name))) {
+                    throw new Error('BANGUMI_FOLDER_CONFLICT: 此目录已被其他轻小说版本使用。');
+                }
+                await writeFile(file, JSON.stringify(identity), { flag: 'wx', mode: 0o600 });
+            }
+        }
         const staging = `${destination}.${randomUUID()}.tmp`;
         try {
             await copyFile(input.artifact.path, staging, constants.COPYFILE_EXCL);

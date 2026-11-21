@@ -92,6 +92,7 @@ export interface DownloadRequest {
   source: string
   sourceUrl: string
   title: string
+  bangumi?: { id: number; title: string }
   author: string
   volumes: string
   volumeNames: string[]

@@ -68,6 +68,22 @@ function fixture() {
 }
 
 describe('BangumiKomga metadata', () => {
+  it('uses the official Chinese title, returns aliases, and leaves same-name series unresolved', async () => {
+    const requestMetadata = vi.fn(async (action, params) => ({
+      status: 200, payload: action === 'search'
+        ? { candidates: [subject, ...(params.query === '同名' ? [
+          { ...subject, id: 124, nameCn: '同名' }, { ...subject, id: 125, nameCn: '同名' },
+        ] : [])] }
+        : { subject, metadata: { alternateTitles: [{ label: '别名', title: '测试简称' }] } },
+    }))
+    const run = createBangumiKomga({ requestMetadata })
+    expect(await run('identity', { kind: 'manga', query: '測試作品' })).toMatchObject({
+      subject: { id: 123, title: '测试作品', aliases: ['テスト', '测试简称'] },
+    })
+    expect(await run('identity', { kind: 'manga', query: '同名' })).toMatchObject({ subject: null })
+    expect(requestMetadata).toHaveBeenCalledTimes(3)
+  })
+
   it('finds candidates and writes an individually approved series while respecting locked fields', async () => {
     const { run, patchSeries } = fixture()
     expect(await run('search', { kind: 'manga', scope: 'series', query: '測試作品' })).toMatchObject({

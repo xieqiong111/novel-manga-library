@@ -197,6 +197,7 @@ export class TaskManager {
                     await this.library.add({
                         artifact,
                         title: task.request.title,
+                        bangumi: task.request.bangumi,
                         author: task.request.author,
                         sourceId: task.request.sourceId,
                         bookId: task.request.bookId,

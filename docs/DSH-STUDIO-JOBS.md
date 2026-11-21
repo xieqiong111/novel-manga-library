@@ -18,8 +18,13 @@
 
 ## 任务和下一步
 
+输入作品名后，`novel_search` 和 `manga_search` 会先查询 Bangumi 的同类型系列。确定条目后，Studio 优先用 Bangumi 中文名搜索下载源，条目没有中文名时使用原名。源站未找到匹配作品时再试 Bangumi 列出的别名。碰到多个同名条目时，先选定正确的 `bangumiSubjectId` 并重新搜索。
+
+下载时同时使用源站的作品 ID 和搜索结果中的 `bangumi.id`。新作品文件夹使用 Bangumi 名称，自动替换文件系统不支持的字符。已归档文件保留在原目录。相同名称的其他版本占用目标目录时，Studio 返回冲突并保留原文件。漫画归档容器须与 Studio 共用下载设置目录，以便下载前确认命名。
+
 | DSH 工具 | Studio API | 下一步 |
 | --- | --- | --- |
+| `novel_search` 或 `manga_search` | `GET /api/bangumi/title`，传入 `kind` 和 `query` | 保留 Bangumi 系列 ID、源站作品 ID 和来源 |
 | `novel_download` | `POST /api/tasks`，`volumes` 可传如 `"1,2"` 的卷号或网页提供的卷 ID 数组 | 保留响应中的任务 ID |
 | `novel_tasks` | `GET /api/tasks/:id` | 查看实际进度，完成后从 `artifacts[].downloadPath` 下载 EPUB |
 | `novel_library` | `GET /api/library/:id`、`POST /api/library/:id/verify` | 核对单个 EPUB 的校验结果 |

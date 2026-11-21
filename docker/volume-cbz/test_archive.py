@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -6,7 +7,7 @@ from xml.etree import ElementTree
 from zipfile import BadZipFile, ZipFile
 
 from archive import (
-    ArchiveError, DownloadHistory, Suwayomi, archive_catalog, archive_directories, run_once,
+    ArchiveError, BangumiFolderConflict, DownloadHistory, Suwayomi, archive_catalog, archive_directories, run_once,
     series_directory, standalone_chapters, storage_roots, write_cbz,
 )
 
@@ -35,6 +36,38 @@ def old_volume(client, root, manga, volume, chapters, previous=()):
 
 
 class ChapterArchiveTests(unittest.TestCase):
+    def test_bangumi_binding_names_only_new_chapters_and_protects_other_editions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            settings = root / "settings" / "download-folders.json"
+            bindings = settings.parent / "bangumi-manga"
+            bindings.mkdir(parents=True)
+            manga = {"id": 17, "sourceId": "99", "title": "下载源别名"}
+            (bindings / "17.json").write_text(json.dumps({
+                "mangaId": "17", "sourceId": "99", "subjectId": 123, "title": "正式名称 ～副标题～",
+            }), encoding="utf-8")
+            live = Suwayomi({"SUWAYOMI_URL": "http://example.invalid"}, settings)
+            client = FakeSuwayomi()
+            first, second = chapter(3, "第1话"), chapter(4, "第2话")
+            write_cbz(client, root, manga, "第001话 [3].cbz", first["name"], "1", [first],
+                      archive_directories(root, [], manga))
+            with patch.object(live, "manga", return_value=manga), patch.object(
+                live, "downloaded_mangas", return_value={17: manga}
+            ), patch.object(live, "manga_chapters", return_value=[first, second]), patch.object(
+                live, "chapter_zip", side_effect=client.chapter_zip
+            ):
+                self.assertEqual(run_once(live, root), 0)
+                catalog = archive_catalog(live, root, 17)
+            self.assertEqual(catalog["bangumiSubjectId"], 123)
+            self.assertEqual(client.calls, [3, 4])
+            self.assertTrue((root / "下载源别名" / "第001话 [3].cbz").is_file())
+            with ZipFile(root / "正式名称 ～副标题～" / "第002话 [4].cbz") as archive:
+                info = ElementTree.fromstring(archive.read("ComicInfo.xml"))
+                self.assertEqual(info.findtext("Series"), "正式名称 ～副标题～")
+                self.assertEqual(info.findtext("Web"), "https://bgm.tv/subject/123")
+            with self.assertRaises(BangumiFolderConflict):
+                archive_directories(root, [], {**live.archive_identity(manga), "id": 18})
+
     def test_completed_history_survives_restart_and_emits_only_new_exports(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

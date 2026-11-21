@@ -5,6 +5,7 @@ import { folderWithin } from '../dist/core/download-folders.js'
 import { atomicWriteJson } from '../dist/util/json.js'
 import { validArchiveFile } from './manga-volume-client.mjs'
 import { MetadataError } from './bangumi-komga.mjs'
+import { readMangaBangumiBinding } from './bangumi-download.mjs'
 
 const interval = 20_000
 const maxAttempts = 10
@@ -73,7 +74,7 @@ export async function openKomgaPostDownload({ settings, archiveHistory, logger, 
       if (configured.refresh || configured.scrape) {
         const folder = path.posix.dirname(event.file)
         jobs.delete(folder)
-        jobs.set(folder, { folder, file: event.file, phase: 'queued', attempts: 0, nextAt: now() })
+        jobs.set(folder, { folder, file: event.file, mangaId: event.mangaId, phase: 'queued', attempts: 0, nextAt: now() })
       }
       state.after = event.seq
     }
@@ -127,7 +128,9 @@ export async function openKomgaPostDownload({ settings, archiveHistory, logger, 
         if (!series) throw new MetadataError(409, 'KOMGA_INDEX_PENDING', 'Komga 尚未收录该 CBZ。')
         job.phase = 'scraping'
         if (options.scrape) {
-          const input = { libraryId: library.id, seriesId: series.id, kind: 'manga' }
+          const binding = await readMangaBangumiBinding(settings.config.downloadFoldersFile, job.mangaId)
+          const input = { libraryId: library.id, seriesId: series.id, kind: 'manga',
+            ...(binding ? { confirmedSubjectId: binding.subjectId } : {}) }
           let fallback = false
           let result
           try {

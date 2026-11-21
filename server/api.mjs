@@ -16,7 +16,8 @@ import { createMangaApi } from './manga-api.mjs'
 import { createKomgaClient } from './komga-client.mjs'
 import { isDshReadRoute } from './integrations.mjs'
 import { createKomgaApi } from './komga-api.mjs'
-import { createBangumiKomga } from './bangumi-komga.mjs'
+import { createBangumiKomga, MetadataError } from './bangumi-komga.mjs'
+import { bindMangaTitle, resolveDownloadSubject } from './bangumi-download.mjs'
 import { createKomgaScanner } from './komga-scan.mjs'
 import { createSavedFileHistory, readDshTasks } from './download-history.mjs'
 import { authorizeStudioJob, isStudioJobCredential, studioJobRoute } from './studio-jobs.mjs'
@@ -116,11 +117,6 @@ export function createApi(
   mangaClient = runtime.suwayomi ?? createSuwayomiClient(),
   komgaClient = runtime.komga ?? createKomgaClient(),
 ) {
-  const handleMangaApi = createMangaApi(mangaClient, logger, {
-    missingBffAuth: settings.mangaCredentialsConfigured && !settings.token && !settings.auth,
-    archiveHistory: settings.archiveHistory,
-    postDownload: settings.postDownload?.status,
-  })
   const currentKomga = () => settings.integrations?.client ?? komgaClient
   const scan = createKomgaScanner()
   const metadata = createBangumiKomga({
@@ -134,6 +130,17 @@ export function createApi(
       : { accepted: false, skipped: true, message: '已跳过自动刷新。' },
   })
   const handleKomgaMaintenance = createKomgaMaintenance({ settings, currentKomga, metadata, scan })
+  const handleMangaApi = createMangaApi(mangaClient, logger, {
+    missingBffAuth: settings.mangaCredentialsConfigured && !settings.token && !settings.auth,
+    archiveHistory: settings.archiveHistory,
+    postDownload: settings.postDownload?.status,
+    async bindBangumi(mangaId, id) {
+      const manga = await mangaClient.getManga(mangaId)
+      const subject = await resolveDownloadSubject(metadata, 'manga', [manga.title], id)
+      await bindMangaTitle(settings.config?.downloadFoldersFile, manga, subject)
+      return subject
+    },
+  })
   const savedFileHistory = createSavedFileHistory(settings, runtime, logger)
   const dshHistory = () => readDshTasks(settings.novelTaskHistoryDir).catch(() => {
     logger.warn('downloads', 'dsh_history_unavailable')
@@ -246,7 +253,7 @@ export function createApi(
     }
   }
 
-  async function createTask(body) {
+  async function createTask(body, jobsCredential) {
     const bookId = typeof body.bookId === 'string' ? body.bookId.trim() : ''
     const url = typeof body.url === 'string' ? body.url.trim() : ''
     if (!bookId && !url) {
@@ -288,6 +295,9 @@ export function createApi(
       assertSafePublicUrl(book.sourceUrl, adapter.hosts)
     }
 
+    const bangumi = jobsCredential || body.bangumiSubjectId !== undefined
+      ? await resolveDownloadSubject(metadata, 'novel', [book.title, ...(book.aliases ?? [])], body.bangumiSubjectId)
+      : undefined
     const task = await runtime.tasks.start({
       bookId: book.id,
       sourceId: book.sourceId,
@@ -295,6 +305,7 @@ export function createApi(
       sourceUrl: book.sourceUrl,
       title: book.title,
       author: book.author,
+      ...(bangumi ? { bangumi } : {}),
       volumes: selector,
       volumeNames: names.length ? names : selector === 'all' ? [] : selector.split(','),
       combine: body.combine === true,
@@ -383,7 +394,7 @@ export function createApi(
 
     if (settings.integrations && await settings.integrations.handle(req, res, url, { sendJson, sendError, readBody })) return true
     if (await handleDownloadFolders(req, res, url)) return true
-    if (await handleMangaApi(req, res, url)) return true
+    if (await handleMangaApi(req, res, url, jobsCredential)) return true
     if (await handleKomgaMaintenance(req, res, url, { sendJson, sendError, readBody })) return true
     if (await handleKomgaApi(req, res, url)) return true
 
@@ -402,6 +413,12 @@ export function createApi(
     try {
       if (method === 'GET' && url.pathname === '/api/health') {
         sendJson(res, 200, { ok: true, dart: runtime.dartAvailable, uptime: Math.round(process.uptime()) })
+        return true
+      }
+      if (method === 'GET' && url.pathname === '/api/bangumi/title') {
+        const id = url.searchParams.get('subjectId')
+        sendJson(res, 200, await metadata('identity', { kind: url.searchParams.get('kind'),
+          query: url.searchParams.get('query'), ...(id === null ? {} : { subjectId: Number(id) }) }))
         return true
       }
       if (method === 'GET' && url.pathname === '/api/status') {
@@ -464,7 +481,7 @@ export function createApi(
         return true
       }
       if (url.pathname === '/api/tasks' && method === 'POST') {
-        sendJson(res, 201, await createTask(await readBody(req)))
+        sendJson(res, 201, await createTask(await readBody(req), jobsCredential))
         return true
       }
       if (segments[1] === 'tasks' && segments.length === 3 && method === 'GET') {
@@ -545,7 +562,7 @@ export function createApi(
       sendError(res, 404, 'NOT_FOUND', `No endpoint for ${method} ${url.pathname}`)
       return true
     } catch (error) {
-      if (error instanceof HttpError) {
+      if (error instanceof HttpError || error instanceof MetadataError) {
         sendError(res, error.status, error.code, error.message)
         return true
       }

@@ -1,4 +1,4 @@
-import type { LibraryEntry, TaskArtifact } from '../types.js';
+import type { DownloadRequest, LibraryEntry, TaskArtifact } from '../types.js';
 import type { Logger } from '../util/logger.js';
 /** On-disk EPUB library with integrity verification and a portable index. */
 export declare class Library {
@@ -33,6 +33,7 @@ export declare class Library {
     add(input: {
         artifact: TaskArtifact;
         title: string;
+        bangumi?: DownloadRequest['bangumi'];
         author: string;
         sourceId: string;
         bookId: string;

@@ -64,6 +64,20 @@ async function seedEpub(): Promise<string> {
 }
 
 describe('Library (requirement #9)', () => {
+  it('saves new files under the official Bangumi name and protects other editions', async () => {
+    const lib = new Library(dir, logger)
+    const source = await seedEpub()
+    const input = {
+      artifact: { path: source, volumeNames: ['第一卷'], chapters: 1, bytes: 0, sha256: null, integrity: 'pending' as const, integrityError: null },
+      title: '源网站标题', bangumi: { id: 123, title: '正式书名 ～副标题～' },
+      author: '测试作者', sourceId: 'fixture', bookId: 'fixture:one', taskId: 'task_1',
+    }
+    const entry = (await lib.add(input))!
+    expect(entry.relativePath).toBe('正式书名 ～副标题～/第一卷.epub')
+    await expect(lib.add({ ...input, bookId: 'fixture:other' })).rejects.toThrow('BANGUMI_FOLDER_CONFLICT')
+    expect((await lib.verify(entry.id))[0]?.ok).toBe(true)
+  })
+
   it('copies a verified EPUB, writes a sha256 sidecar and persists a portable index', async () => {
     const lib = new Library(dir, logger)
     await lib.load()

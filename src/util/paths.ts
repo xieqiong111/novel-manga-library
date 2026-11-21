@@ -51,6 +51,19 @@ export function sanitizeFileName(name: string, fallback = 'untitled'): string {
   return out
 }
 
+/** Preserve the Bangumi display title and replace filesystem separators. */
+export function bangumiFolderName(title: string): string {
+  const safe = title.replace(/[<>:"/\\|?*\x00-\x1f\x7f]/g, '_').replace(/^[ .]+|[ .]+$/g, '')
+  let result = ''
+  for (const character of safe) {
+    if (Buffer.byteLength(result + character) > 160) break
+    result += character
+  }
+  result = result.replace(/[ .]+$/g, '')
+  if (!result) throw new Error('Bangumi title cannot be used as a folder name')
+  return /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/i.test(result) ? '_' + result : result
+}
+
 export class UrlViolation extends Error {
   readonly code = 'URL_VIOLATION'
   constructor(message: string) {

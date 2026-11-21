@@ -1,6 +1,7 @@
 import { SuwayomiError } from './suwayomi-client.mjs'
 import { createMangaKomga } from './manga-komga.mjs'
 import { createMangaArchiveHistory } from './manga-volume-client.mjs'
+import { MetadataError } from './bangumi-komga.mjs'
 
 const MAX_BODY = 16 * 1024
 
@@ -97,7 +98,7 @@ function requiredId(value, field) {
  * the shared LN_BFF_TOKEN check before dispatching to this handler.
  */
 export function createMangaApi(client, logger = { warn() {} },
-  { missingBffAuth = false, getVolumes, archiveHistory = createMangaArchiveHistory(), postDownload } = {}) {
+  { missingBffAuth = false, getVolumes, archiveHistory = createMangaArchiveHistory(), postDownload, bindBangumi } = {}) {
   const komga = createMangaKomga(client, getVolumes)
   const requestBuckets = new Map()
   function limitRequest(req, bucketName, maxRequests) {
@@ -116,7 +117,7 @@ export function createMangaApi(client, logger = { warn() {} },
     }
   }
 
-  return async function handleMangaApi(req, res, url) {
+  return async function handleMangaApi(req, res, url, jobsCredential = false) {
     if (url.pathname !== '/api/manga' && !url.pathname.startsWith('/api/manga/')) return false
     try {
       if (missingBffAuth) {
@@ -237,9 +238,11 @@ export function createMangaApi(client, logger = { warn() {} },
             }
             sendJson(res, 200, await komga.status(mangaId, volume, selection))
           } else {
-            const { volume, chapterIds } = await readJson(req)
+            const { volume, chapterIds, bangumiSubjectId } = await readJson(req)
             if (volume !== undefined) throw new MangaApiError(409, 'VOLUME_DOWNLOAD_DISABLED', '漫画下载现按章进行，请使用章节 ID。')
-            sendJson(res, 200, await komga.downloadChapters(mangaId, chapterIds))
+            const name = jobsCredential || bangumiSubjectId !== undefined
+              ? () => bindBangumi(mangaId, bangumiSubjectId) : undefined
+            sendJson(res, 200, await komga.downloadChapters(mangaId, chapterIds, name))
           }
           return true
         }
@@ -284,7 +287,7 @@ export function createMangaApi(client, logger = { warn() {} },
       sendError(res, 404, 'NOT_FOUND', `No endpoint for ${method} ${url.pathname}`)
       return true
     } catch (error) {
-      if (error instanceof MangaApiError || error instanceof SuwayomiError) {
+      if (error instanceof MangaApiError || error instanceof SuwayomiError || error instanceof MetadataError) {
         sendError(res, error.status, error.code, error.message, error.status === 429 ? { 'retry-after': '60' } : {})
         return true
       }

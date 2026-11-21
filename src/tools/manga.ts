@@ -2,7 +2,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { PluginRuntime } from '../runtime.js'
 import { readStudio } from '../../server/studio-reader.mjs'
-import { studioDelegated, studioJob } from '../../server/studio-jobs.mjs'
+import { searchStudioWork, studioDelegated, studioJob } from '../../server/studio-jobs.mjs'
 import type { MangaArchiveStatus, MangaKomga } from '../../server/manga-komga.mjs'
 import type { SuwayomiClient, SuwayomiTask } from '../../server/suwayomi-client.mjs'
 import { canonical, jsonOutput, ok } from './common.js'
@@ -188,11 +188,13 @@ export function registerMangaTools(ctx: Context, runtime: PluginRuntime, komga: 
     name: 'manga_komga_download',
     description: [
       'After checking manga_komga_status, submit only actual IDs of the requested chapters.',
+      'In Studio mode pass the confirmed Bangumi series ID from manga_search. Studio chooses the official work folder name.',
       'Keep the manga ID and source together. Never build a volume archive or use display numbers as chapter IDs.',
       automaticArchive,
     ].join(' '),
     parameters: {
       mangaId: { type: 'string', required: true, description: 'The selected Suwayomi manga ID, including its source.' },
+      bangumiSubjectId: { type: 'number', description: 'Bangumi series ID reported by manga_search in Studio mode.' },
       chapterIds: { type: 'array', required: true, items: { type: 'string' }, description: 'Actual chapter IDs from manga_komga_status, up to 100 per request.' },
     },
     output: jsonOutput(),
@@ -204,7 +206,8 @@ export function registerMangaTools(ctx: Context, runtime: PluginRuntime, komga: 
           return { ok: false, error: { code: 'MANGA_ARCHIVE_SELECTION_REQUIRED', message: '请选择要下载的章节 ID。' } }
         }
         const result = studioDelegated()
-          ? await studioJob<DownloadResult>(`/api/manga/${encodeURIComponent(mangaId)}/komga`, { method: 'POST', body: { chapterIds } })
+          ? await studioJob<DownloadResult>(`/api/manga/${encodeURIComponent(mangaId)}/komga`,
+            { method: 'POST', body: { chapterIds, bangumiSubjectId: args.bangumiSubjectId } })
           : await komga.downloadChapters(mangaId, chapterIds)
         return downloadReport(result, { tool: 'manga_komga_status', args: { mangaId, chapterIds } })
       })
@@ -216,11 +219,14 @@ export function registerMangaTools(ctx: Context, runtime: PluginRuntime, komga: 
     description: [
       'Search manga through the configured Suwayomi server and its installed sources.',
       'Keep source and manga IDs together. Confirm the edition with the user when multiple sources match.',
+      'Studio checks Bangumi first, searches the official title before aliases, and returns an official Bangumi series ID for downloads.',
       'Search types are SEARCH, POPULAR, and LATEST; pagination is one-based.',
     ].join(' '),
     parameters: {
       query: { type: 'string', description: 'Optional search phrase; required for SEARCH and ignored for POPULAR/LATEST.' },
       sourceId: { type: 'string', description: 'Optional Suwayomi source id to limit the search.' },
+      bangumiSubjectId: { type: 'number', description: 'Confirmed Bangumi series ID when choosing among candidates.' },
+      sourceQuery: { type: 'string', description: 'Exact source query returned by the previous Studio result. Pass this with pagination.' },
       type: { type: 'string', description: 'SEARCH (default), POPULAR, or LATEST.' },
       page: { type: 'number', description: 'One-based source page (default 1).' },
       offset: { type: 'number', description: 'Within an upstream page, reuse nextOffset from the previous result (default 0).' },
@@ -247,10 +253,11 @@ export function registerMangaTools(ctx: Context, runtime: PluginRuntime, komga: 
           resultId: args.resultId?.trim() || undefined,
           limit: bounded(args.limit, 20, 50),
         }
-        const result = studioDelegated()
-          ? await studioJob<Record<string, unknown>>('/api/manga/search', { query: input })
-          : await client(runtime).searchManga(input)
-        return ok({ ...result, notice: '请按作品 ID 和来源确认版本，再查询章节和归档方式。同名结果可能来自不同来源。' })
+        const result = !studioDelegated() ? await client(runtime).searchManga(input)
+          : type === 'SEARCH' ? await searchStudioWork('manga', {
+            ...input, bangumiSubjectId: args.bangumiSubjectId, sourceQuery: args.sourceQuery,
+          }) : await studioJob<Record<string, unknown>>('/api/manga/search', { query: input })
+        return ok({ notice: '请按作品 ID 和来源确认版本，再查询章节和归档方式。同名结果可能来自不同来源。', ...result })
       })
     },
   }))
@@ -300,10 +307,12 @@ export function registerMangaTools(ctx: Context, runtime: PluginRuntime, komga: 
     description: [
       'Queue explicitly selected Suwayomi chapters for download.',
       'Use actual IDs from manga_chapters. Use manga_tasks for progress. Prefer manga_komga_download for verified single-chapter archives.',
+      'In Studio mode pass the confirmed Bangumi series ID so the archive uses its official folder name.',
       automaticArchive,
     ].join(' '),
     parameters: {
       mangaId: { type: 'string', required: true, description: 'Suwayomi manga id that owns all selected chapters.' },
+      bangumiSubjectId: { type: 'number', description: 'Bangumi series ID reported by manga_search in Studio mode.' },
       chapterIds: {
         type: 'array', required: true, items: { type: 'string' },
         description: 'Chapter ids returned by manga_chapters. Select only the chapters to enqueue.',
@@ -319,7 +328,8 @@ export function registerMangaTools(ctx: Context, runtime: PluginRuntime, komga: 
           return { ok: false, error: { code: 'CHAPTER_IDS_REQUIRED', message: '请使用 manga_chapters 返回的章节 ID。' } }
         }
         const result = studioDelegated()
-          ? await studioJob<DownloadResult>(`/api/manga/${encodeURIComponent(mangaId)}/komga`, { method: 'POST', body: { chapterIds } })
+          ? await studioJob<DownloadResult>(`/api/manga/${encodeURIComponent(mangaId)}/komga`,
+            { method: 'POST', body: { chapterIds, bangumiSubjectId: args.bangumiSubjectId } })
           : await client(runtime).download({ mangaId, chapterIds })
         return downloadReport(result, { tool: 'manga_tasks', args: { mangaId } })
       })

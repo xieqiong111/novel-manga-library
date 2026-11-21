@@ -88,6 +88,7 @@ export function createMangaKomga(client, getVolumes, archiveUrl) {
       if (!catalog.archiveMode) return result
       return {
         ...result, archiveMode: catalog.archiveMode,
+        ...(catalog.bangumiSubjectId ? { bangumiSubjectId: catalog.bangumiSubjectId, folderTitle: catalog.folderTitle } : {}),
         chapters: chapters.map((chapter) => {
           const task = tasks.get(chapter.id) ?? null
           const state = !chapter.filename && chapter.legacyVolume ? 'in_legacy_volume'
@@ -107,17 +108,27 @@ export function createMangaKomga(client, getVolumes, archiveUrl) {
       throw new SuwayomiError('VOLUME_DOWNLOAD_DISABLED', '漫画下载现按章进行，请使用章节 ID。', 409)
     },
 
-    async downloadChapters(mangaId, ids) {
+    async downloadChapters(mangaId, ids, bindBangumi) {
       requireCatalog(mangaId)
       const chapterIds = chapterSelection(ids)
-      const catalog = await load(mangaId, { chapterIds })
+      let catalog = await load(mangaId, { chapterIds })
       if (catalog.archiveMode !== 'chapter') {
         throw new SuwayomiError('CHAPTER_ARCHIVE_UNAVAILABLE',
           '这个来源未提供可单独归档的章节，请选择提供分话目录的来源。', 409)
       }
+      if (chapterIds.some((id) => !catalog.chapters.some((chapter) => chapter.id === id))) {
+        throw new SuwayomiError('CHAPTER_ARCHIVE_SELECTION_INVALID', '选择中含整卷或无效条目，请选实际章节。', 409)
+      }
+      const bangumi = bindBangumi ? await bindBangumi() : null
+      if (bangumi) {
+        catalog = await load(mangaId, { chapterIds })
+        if (catalog.bangumiSubjectId !== bangumi.id) {
+          throw new SuwayomiError('BANGUMI_ARCHIVE_UNCONFIRMED', '归档服务还未确认 Bangumi 文件夹名称，未提交下载。', 503)
+        }
+      }
       const entries = new Map(catalog.chapters.map((chapter) => [chapter.id, chapter]))
       if (chapterIds.some((id) => !entries.has(id))) {
-        throw new SuwayomiError('CHAPTER_ARCHIVE_SELECTION_INVALID', '选择中含整卷或无效条目，请选实际章节。', 409)
+        throw new SuwayomiError('CHAPTER_ARCHIVE_SELECTION_INVALID', '确认保存目录时章节列表发生变化，请重新选择。', 409)
       }
       const requested = chapterIds.filter((id) => !entries.get(id).downloaded && !entries.get(id).filename && !entries.get(id).legacyVolume)
       const skipped = chapterIds.filter((id) => !requested.includes(id))
@@ -125,9 +136,9 @@ export function createMangaKomga(client, getVolumes, archiveUrl) {
         const { filename } = entries.get(id)
         return filename ? [{ chapterId: id, filename }] : []
       })
-      if (!requested.length) return { ...emptyDownload(skipped), archived }
+      if (!requested.length) return { ...emptyDownload(skipped), archived, ...(bangumi ? { bangumi } : {}) }
       const result = await client.download({ mangaId, chapterIds: requested })
-      return { ...result, skipped: [...skipped, ...result.skipped], filename: null, archived }
+      return { ...result, skipped: [...skipped, ...result.skipped], filename: null, archived, ...(bangumi ? { bangumi } : {}) }
     },
   }
 }

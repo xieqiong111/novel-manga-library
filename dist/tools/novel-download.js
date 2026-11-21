@@ -19,6 +19,7 @@ export function registerNovelDownload(ctx, runtime) {
         description: [
             'Start a background EPUB download for selected volumes of a light novel and return immediately with a taskId.',
             'In managed mode Studio owns the job and files. Use the returned taskId and read progress from Studio. Do not start a separate local download.',
+            'Pass the Bangumi series ID from novel_search. Studio names the work folder using the official Bangumi title.',
             'This is step 4 of the closed loop: novel_search -> novel_details -> novel_volumes -> novel_download.',
             'Pass volumes as "all", 1-based indices like "1,2,5", or comma-separated exact volume names.',
             'Optionally pass volumeNames (the exact names from novel_volumes) for accurate progress reporting.',
@@ -28,6 +29,7 @@ export function registerNovelDownload(ctx, runtime) {
         ].join(' '),
         parameters: {
             bookId: { type: 'string', description: 'Book id from novel_search, e.g. "fixture:demo" or "bilinovel:1234". Provide this or url.' },
+            bangumiSubjectId: { type: 'number', description: 'Bangumi series ID returned by novel_search in Studio mode.' },
             url: { type: 'string', description: 'Canonical detail page URL on an enabled public source. Provide this or bookId.' },
             source: { type: 'string', description: 'Optional source id hint (bilinovel / wenku8 / fixture).' },
             volumes: {

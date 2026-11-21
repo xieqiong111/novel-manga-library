@@ -98,6 +98,7 @@ export function toTask(record) {
     id: record.id,
     novelId: record.request?.bookId ?? '',
     title: record.request?.title ?? '未知书目',
+    ...(record.request?.bangumi ? { bangumi: record.request.bangumi } : {}),
     ...art(record.request?.bookId ?? record.id),
     state: TASK_STATE[record.state] ?? 'failed',
     percent: Number(progress.percent) || 0,
