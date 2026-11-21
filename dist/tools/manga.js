@@ -39,16 +39,87 @@ function requiredId(value) {
     const id = value?.trim();
     return id ? id : null;
 }
+function selectedIds(input) {
+    return [...new Set((input ?? []).map((id) => id.trim()).filter(Boolean))];
+}
+function downloadReport(result, next) {
+    const unconfirmed = result.unconfirmed ?? [];
+    const counts = {
+        queued: result.queued.length,
+        skipped: result.skipped?.length ?? 0,
+        downloaded: result.completed?.length ?? 0,
+        unconfirmed: unconfirmed.length,
+        archived: (result.archived?.length ?? 0) + Number(Boolean(result.filename)),
+    };
+    const failed = (result.queue ?? []).filter((task) => task.state === 'failed' && result.queued.includes(task.chapterId)).map((task) => task.chapterId);
+    const observedQueued = counts.queued - failed.length;
+    const summary = [
+        counts.archived ? `确认 CBZ ${counts.archived} 个` : '',
+        observedQueued ? `确认在队列 ${observedQueued} 话` : '',
+        counts.downloaded ? `下载完成 ${counts.downloaded} 话` : '',
+        counts.skipped ? `${counts.skipped} 话无需重复提交` : '',
+        failed.length ? `下载失败 ${failed.length} 话` : '',
+        counts.unconfirmed ? `提交待确认 ${counts.unconfirmed} 话` : '',
+    ].filter(Boolean).join('，') || '没有新增任务';
+    const { queue, ...reported } = result;
+    const ids = new Set([...result.queued, ...(result.skipped ?? []), ...(result.completed ?? []), ...unconfirmed]);
+    const report = {
+        ...reported,
+        ...(queue ? { queue: queue.filter((task) => ids.has(task.chapterId)) } : {}),
+        failed,
+        summary,
+        next,
+    };
+    if (unconfirmed.length || failed.length)
+        return {
+            ...report, ok: false, error: {
+                code: unconfirmed.length ? 'MANGA_DOWNLOAD_UNCONFIRMED' : 'MANGA_DOWNLOAD_FAILED',
+                message: '请先核对所选章节的实际状态，再决定是否重试。',
+                retryable: false,
+            },
+        };
+    return ok(report);
+}
+function archiveNotice(status, volume) {
+    if (!status.available)
+        return 'Komga 归档服务未配置。可以用 manga_chapters 和 manga_tasks 检查 Suwayomi 下载。';
+    if (volume !== undefined && status.volumes.length === 0 && status.archiveMode === 'chapter') {
+        return '该来源按话归档。请查章节或使用章节 ID 查询；话号不能作为卷号。';
+    }
+    if (volume !== undefined && status.volumes.length === 0)
+        return '所查的卷号不在当前来源的分卷目录中。';
+    const mode = status.archiveMode ?? (status.volumes.length ? 'volume' : 'unknown');
+    if (mode === 'unsupported')
+        return '当前来源没有可确认的分卷或分话归档计划。仍可通过 Suwayomi 下载选定章节。';
+    if (mode === 'unknown')
+        return '归档服务未返回分话信息。请更新归档服务，并使用 Suwayomi 工具核对下载。';
+    const rows = mode === 'volume' ? status.volumes : status.chapters ?? [];
+    const counts = (state) => rows.filter((row) => row.state === state).length;
+    const summary = [
+        `已归档 ${counts('archived')}`, `待打包 ${counts('waiting_archive')}`,
+        `下载中 ${counts('downloading')}`, `排队 ${counts('queued')}`,
+        `下载失败 ${counts('failed')}`, `归档失败 ${counts('archive_failed')}`,
+    ].join('，');
+    return `按${mode === 'volume' ? '卷' : '话'}归档。本次查询${summary}。归档成功表示 CBZ 已写入，Komga 扫描状态需另查。`;
+}
+function queueNotice(queue, cancelled) {
+    if (cancelled)
+        return '已回读取消请求后的队列。章节离开队列不代表已下载或已归档，请查询章节和 CBZ 状态。';
+    if (!queue.length)
+        return '当前没有匹配的队列记录。请查 manga_chapters 确认下载，查 manga_komga_status 确认 CBZ。';
+    return `队列中有 ${queue.length} 个匹配任务。进度为 null 表示来源未提供百分比。请通过归档状态确认 CBZ。`;
+}
 /** Register the independent manga tool family against the shared Suwayomi client. */
 export function registerMangaTools(ctx, runtime, komga = runtime.mangaKomga) {
     ctx.tools.register(defineTool({
         name: 'studio_read',
-        description: 'Read Studio through its scoped read-only API. Resources: health, novels, novelTasks, manga, mangaTasks, komga, komgaSeries (requires libraryId), mangaVolume (requires mangaId, optional volume).',
+        description: 'Read Studio through its scoped read-only API. Resources: health, novels, novelTasks, manga, mangaTasks, komga, komgaSeries (requires libraryId), mangaArchive (requires mangaId, optional volume or chapterIds).',
         parameters: {
             resource: { type: 'string', required: true, description: 'Studio resource name.' },
             libraryId: { type: 'string', description: 'Komga library ID for komgaSeries.' },
-            mangaId: { type: 'string', description: 'Suwayomi manga ID for mangaVolume.' },
+            mangaId: { type: 'string', description: 'Suwayomi manga ID for mangaArchive.' },
             volume: { type: 'number', description: 'Optional volume number.' },
+            chapterIds: { type: 'array', items: { type: 'string' }, description: 'Optional chapter IDs for mangaArchive.' },
         },
         output: jsonOutput(),
         async execute(args) {
@@ -59,35 +130,48 @@ export function registerMangaTools(ctx, runtime, komga = runtime.mangaKomga) {
     }));
     ctx.tools.register(defineTool({
         name: 'manga_komga_status',
-        description: 'Read recognisable manga volumes, actual Suwayomi chapter download progress, and the exported CBZ filename in the Komga directory. Pass a volume number for a single volume.',
+        description: 'Inspect the selected manga source before downloading. Reports volume or chapter archive mode, actual queue state and confirmed CBZ files. A volume is decided by source labels; a displayed chapter number is not a volume number or a chapter ID.',
         parameters: {
-            mangaId: { type: 'string', required: true, description: 'Suwayomi manga id from manga_search.' },
-            volume: { type: 'number', description: 'Optional volume number.' },
+            mangaId: { type: 'string', required: true, description: 'Suwayomi manga ID from manga_search.' },
+            volume: { type: 'number', description: 'A real volume number from this tool. Omit to discover archive mode.' },
+            chapterIds: { type: 'array', items: { type: 'string' }, description: 'Optional actual chapter IDs for per-chapter archive status.' },
+            offset: { type: 'number', description: 'Optional zero-based chapter archive page offset from chapterPage.nextOffset.' },
+            limit: { type: 'number', description: 'Optional chapter archive page size, up to 100.' },
         },
         output: jsonOutput(),
         async execute(args) {
-            return runMangaTool(runtime, 'manga_komga_status', async () => ok(await komga.status(args.mangaId.trim(), args.volume)));
+            return runMangaTool(runtime, 'manga_komga_status', async () => {
+                const mangaId = args.mangaId.trim();
+                const selection = args.chapterIds !== undefined || args.offset !== undefined || args.limit !== undefined
+                    ? { chapterIds: args.chapterIds === undefined ? undefined : selectedIds(args.chapterIds), offset: args.offset, limit: args.limit }
+                    : undefined;
+                const status = selection ? await komga.status(mangaId, args.volume, selection) : await komga.status(mangaId, args.volume);
+                return ok({ ...status, notice: archiveNotice(status, args.volume) });
+            });
         },
     }));
     ctx.tools.register(defineTool({
         name: 'manga_komga_download',
-        description: 'Queue one explicitly selected manga volume for automatic CBZ export into the Komga library directory. Use manga_komga_status to find volume numbers and track the result.',
+        description: 'After checking manga_komga_status, submit one real volume or explicit chapter IDs on a per-chapter source. Specify exactly one. Report confirmed queue results immediately, then use manga_komga_status to confirm the CBZ.',
         parameters: {
-            mangaId: { type: 'string', required: true, description: 'Suwayomi manga id from manga_search.' },
-            volume: { type: 'number', required: true, description: 'Volume number returned by manga_komga_status.' },
+            mangaId: { type: 'string', required: true, description: 'The selected Suwayomi manga ID, including its source.' },
+            volume: { type: 'number', description: 'Volume number returned by manga_komga_status for a volume source.' },
+            chapterIds: { type: 'array', items: { type: 'string' }, description: 'Actual IDs from manga_chapters or manga_komga_status, up to 100. Do not enter displayed chapter numbers.' },
         },
         output: jsonOutput(),
         async execute(args) {
             return runMangaTool(runtime, 'manga_komga_download', async () => {
-                const result = await komga.download(args.mangaId.trim(), args.volume);
-                if (result.unconfirmed?.length) {
-                    return { ...result, ok: false, error: {
-                            code: 'MANGA_DOWNLOAD_UNCONFIRMED',
-                            message: 'Check manga_komga_status for the unconfirmed chapters.',
-                            retryable: false,
-                        } };
+                const mangaId = args.mangaId.trim();
+                const chapterIds = selectedIds(args.chapterIds);
+                if ((args.volume === undefined && !chapterIds.length) || (args.volume !== undefined && args.chapterIds !== undefined)) {
+                    return { ok: false, error: { code: 'MANGA_ARCHIVE_SELECTION_REQUIRED', message: '请提供一个卷号，或一组选中的章节 ID。' } };
                 }
-                return ok(result);
+                if (args.volume !== undefined) {
+                    const result = await komga.download(mangaId, args.volume);
+                    return downloadReport(result, { tool: 'manga_komga_status', args: { mangaId, volume: args.volume } });
+                }
+                const result = await komga.downloadChapters(mangaId, chapterIds);
+                return downloadReport(result, { tool: 'manga_komga_status', args: { mangaId, chapterIds } });
             });
         },
     }));
@@ -95,7 +179,7 @@ export function registerMangaTools(ctx, runtime, komga = runtime.mangaKomga) {
         name: 'manga_search',
         description: [
             'Search manga through the configured Suwayomi server and its installed sources.',
-            'Use the returned manga id with manga_details, manga_chapters, manga_download, or manga_subscribe.',
+            'Keep source and manga IDs together. Confirm the edition with the user when multiple sources match.',
             'Search types are SEARCH, POPULAR, and LATEST; pagination is one-based.',
         ].join(' '),
         parameters: {
@@ -127,7 +211,7 @@ export function registerMangaTools(ctx, runtime, komga = runtime.mangaKomga) {
                     resultId: args.resultId?.trim() || undefined,
                     limit: bounded(args.limit, 20, 50),
                 });
-                return ok({ ...result });
+                return ok({ ...result, notice: '请按作品 ID 和来源确认版本，再查询章节和归档方式。同名结果可能来自不同来源。' });
             });
         },
     }));
@@ -141,13 +225,13 @@ export function registerMangaTools(ctx, runtime, komga = runtime.mangaKomga) {
                 const mangaId = requiredId(args.mangaId);
                 if (!mangaId)
                     return { ok: false, error: { code: 'MANGA_ID_REQUIRED', message: 'Provide mangaId.' } };
-                return ok({ manga: await client(runtime).getManga(mangaId) });
+                return ok({ manga: await client(runtime).getManga(mangaId), notice: '下载前请查 manga_komga_status 确认按卷或按话。' });
             });
         },
     }));
     ctx.tools.register(defineTool({
         name: 'manga_chapters',
-        description: 'List chapters for a manga, including chapter ids, read/download state, page count, and upload date. Pass returned chapter ids to manga_download.',
+        description: 'List source chapter entries and their actual IDs, display numbers and download state. Some entries are whole volumes. Use manga_komga_status to determine volume grouping.',
         parameters: {
             mangaId: { type: 'string', required: true, description: 'Suwayomi manga id.' },
             limit: { type: 'number', description: 'Maximum chapters to return (1-100, default 50).' },
@@ -163,7 +247,7 @@ export function registerMangaTools(ctx, runtime, komga = runtime.mangaKomga) {
                     limit: bounded(args.limit, 50),
                     offset: Math.max(Math.trunc(args.offset ?? 0), 0),
                 });
-                return ok({ ...result });
+                return ok({ ...result, notice: 'number 是来源标注的话号；下载参数 chapterIds 使用 id。是否组成卷以 manga_komga_status 为准。' });
             });
         },
     }));
@@ -172,7 +256,7 @@ export function registerMangaTools(ctx, runtime, komga = runtime.mangaKomga) {
         description: [
             'Queue explicitly selected Suwayomi chapters for download.',
             'This only enqueues chapter downloads; it does not fetch page images into this DSH process.',
-            'Provide the parent manga id and chapter ids from manga_chapters, then use manga_tasks to inspect or dequeue them.',
+            'Use the actual chapter IDs from manga_chapters. Inspect manga_tasks for progress and manga_komga_status for CBZ output.',
         ].join(' '),
         parameters: {
             mangaId: { type: 'string', required: true, description: 'Suwayomi manga id that owns all selected chapters.' },
@@ -187,23 +271,12 @@ export function registerMangaTools(ctx, runtime, komga = runtime.mangaKomga) {
                 const mangaId = requiredId(args.mangaId);
                 if (!mangaId)
                     return { ok: false, error: { code: 'MANGA_ID_REQUIRED', message: 'Provide mangaId.' } };
-                const chapterIds = [...new Set((args.chapterIds ?? []).map((id) => String(id).trim()).filter(Boolean))];
+                const chapterIds = selectedIds(args.chapterIds);
                 if (chapterIds.length === 0) {
-                    return { ok: false, error: { code: 'CHAPTER_IDS_REQUIRED', message: 'Provide one or more chapterIds from manga_chapters.' } };
+                    return { ok: false, error: { code: 'CHAPTER_IDS_REQUIRED', message: '请使用 manga_chapters 返回的章节 ID。' } };
                 }
                 const result = await client(runtime).download({ mangaId, chapterIds });
-                if (result.unconfirmed?.length) {
-                    return {
-                        ...result,
-                        ok: false,
-                        error: {
-                            code: 'MANGA_DOWNLOAD_UNCONFIRMED',
-                            message: 'Suwayomi did not confirm every chapter. Check manga_tasks and manga_chapters.',
-                            retryable: false,
-                        },
-                    };
-                }
-                return ok({ ...result });
+                return downloadReport(result, { tool: 'manga_tasks', args: { mangaId } });
             });
         },
     }));
@@ -215,6 +288,7 @@ export function registerMangaTools(ctx, runtime, komga = runtime.mangaKomga) {
         ].join(' '),
         parameters: {
             action: { type: 'string', description: 'status (default), list, or cancel.' },
+            mangaId: { type: 'string', description: 'Optional media ID to filter displayed queue entries.' },
             chapterIds: { type: 'array', items: { type: 'string' }, description: 'Chapter ids to dequeue; required for cancel.' },
         },
         output: jsonOutput(),
@@ -224,11 +298,14 @@ export function registerMangaTools(ctx, runtime, komga = runtime.mangaKomga) {
                 if (!['status', 'list', 'cancel'].includes(action)) {
                     return { ok: false, error: { code: 'UNKNOWN_ACTION', message: 'action must be status, list, or cancel.' } };
                 }
-                const chapterIds = [...new Set((args.chapterIds ?? []).map((id) => String(id).trim()).filter(Boolean))];
+                const chapterIds = selectedIds(args.chapterIds);
                 if (action === 'cancel' && chapterIds.length === 0) {
                     return { ok: false, error: { code: 'CHAPTER_IDS_REQUIRED', message: 'Provide chapterIds to cancel.' } };
                 }
-                return ok({ ...(await client(runtime).tasks({ action: action, chapterIds })) });
+                const result = await client(runtime).tasks({ action: action, chapterIds });
+                const mangaId = requiredId(args.mangaId);
+                const queue = mangaId ? result.queue.filter((task) => task.mangaId === mangaId) : result.queue;
+                return ok({ ...result, queue, count: queue.length, notice: queueNotice(queue, action === 'cancel') });
             });
         },
     }));

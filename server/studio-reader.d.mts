@@ -5,4 +5,5 @@ export declare function readStudio(options: {
   libraryId?: string
   mangaId?: string
   volume?: number
+  chapterIds?: string[]
 }): Promise<unknown>

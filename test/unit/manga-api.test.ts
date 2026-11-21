@@ -151,6 +151,34 @@ describe('Suwayomi BFF routes', () => {
     expect(download).toHaveBeenCalledOnce()
   })
 
+  it('exposes confirmed chapter archives and pending or failed stages through the existing manga archive route', async () => {
+    const getVolumes = vi.fn(async () => ({
+      archiveMode: 'chapter', volumes: [], chapterCount: 7,
+      chapters: [
+        { id: '40', name: '第6话', number: '6', downloaded: true, filename: '第006话 [40].cbz' },
+        { id: '41', name: '第7话', number: '7', downloaded: false, filename: null },
+        { id: '42', name: '第8话', number: '8', downloaded: true, filename: null, archiveFailed: true },
+      ],
+    }))
+    const tasks = vi.fn(async () => ({ queue: [
+      { mangaId: '22', chapterId: '41', state: 'running', percent: 63 },
+      { mangaId: '23', chapterId: '41', state: 'running', percent: 99 },
+    ] }))
+    const api = createMangaApi({ tasks }, undefined, { getVolumes })
+    const path = '/api/manga/22/komga'
+    const res = responseSink()
+    await api(request('GET', path, {}), res, new URL('http://localhost' + path + '?chapterIds=40,41,42,99'))
+    expect(getVolumes).toHaveBeenCalledWith('22', { chapterIds: ['40', '41', '42', '99'] })
+    expect(res.json()).toMatchObject({ archiveMode: 'chapter', missingChapterIds: ['99'], chapters: [
+      { id: '40', state: 'archived', task: null, filename: '第006话 [40].cbz' },
+      { id: '41', state: 'downloading', task: { percent: 63 } },
+      { id: '42', state: 'archive_failed', task: null },
+    ] })
+    const invalid = responseSink()
+    await api(request('GET', path, {}), invalid, new URL('http://localhost' + path + '?volume=2&chapterIds=41'))
+    expect(invalid.status).toBe(400)
+  })
+
   it('rate-limits searches per client IP and returns Retry-After', async () => {
     const client = { searchManga: vi.fn(async () => ({ mangas: [], hasNextPage: false, errors: [] })) }
     const api = createApi({ suwayomi: client }, { token: '', corsOrigin: '', allowDelete: false }, logger as never, client as never)

@@ -10,7 +10,7 @@ const endpoints = {
   komga: '/api/komga/libraries',
 }
 
-export async function readStudio({ url, tokenFile, resource, libraryId, mangaId, volume }) {
+export async function readStudio({ url, tokenFile, resource, libraryId, mangaId, volume, chapterIds }) {
   if (!url || !tokenFile) throw new SuwayomiError('STUDIO_READER_UNCONFIGURED', 'Set LN_STUDIO_READ_URL and LN_STUDIO_READ_TOKEN_FILE.', 503)
   let pathname = endpoints[resource]
   const query = new URLSearchParams()
@@ -18,13 +18,20 @@ export async function readStudio({ url, tokenFile, resource, libraryId, mangaId,
     pathname = '/api/komga/series'
     query.set('libraryId', libraryId)
   }
-  if (resource === 'mangaVolume' && /^[1-9]\d{0,9}$/.test(mangaId ?? '')) {
+  if (['mangaVolume', 'mangaArchive'].includes(resource) && /^[1-9]\d{0,9}$/.test(mangaId ?? '')) {
     pathname = `/api/manga/${mangaId}/komga`
     if (volume !== undefined) {
       if (!Number.isInteger(volume) || volume < 1 || volume > 9999) {
         throw new SuwayomiError('INVALID_VOLUME', 'Choose a volume from 1 to 9999.', 400)
       }
       query.set('volume', String(volume))
+    }
+    if (chapterIds !== undefined) {
+      if (volume !== undefined || !Array.isArray(chapterIds) || !chapterIds.length || chapterIds.length > 100 ||
+          chapterIds.some((id) => typeof id !== 'string' || !/^[1-9]\d{0,9}$/.test(id))) {
+        throw new SuwayomiError('INVALID_ARCHIVE_SELECTION', 'Choose a volume or up to 100 chapter IDs.', 400)
+      }
+      query.set('chapterIds', chapterIds.join(','))
     }
   }
   if (typeof pathname !== 'string') throw new SuwayomiError('INVALID_RESOURCE', 'Choose a valid resource and provide its required ID.', 400)

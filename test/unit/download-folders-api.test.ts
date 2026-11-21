@@ -5,8 +5,9 @@ import { expect, it, vi } from 'vitest'
 import { createDownloadFoldersApi, komgaSubfolder } from '../../server/download-folders-api.mjs'
 import { createKomgaClient } from '../../server/komga-client.mjs'
 
-it('maps only overlapping NAS paths, including the Komga file URI variant', () => {
-  expect(komgaSubfolder('/vol1/漫画/Suwayomi', 'file:///vol1/%E6%BC%AB%E7%94%BB')).toBe('')
+it('maps only exact or contained NAS paths, including the Komga file URI variant', () => {
+  expect(komgaSubfolder('/vol1/漫画/Suwayomi', 'file:///vol1/%E6%BC%AB%E7%94%BB')).toBeNull()
+  expect(komgaSubfolder('/vol1/漫画', 'file:///vol1/%E6%BC%AB%E7%94%BB')).toBe('')
   expect(komgaSubfolder('/vol1/漫画', '/vol1/漫画/收藏')).toBe('收藏')
   expect(komgaSubfolder('/vol1/漫画', '/vol1/漫画2')).toBeNull()
   expect(komgaSubfolder('/vol1/漫画', 'file://other/vol1/漫画')).toBeNull()

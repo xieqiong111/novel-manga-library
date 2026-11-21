@@ -16,9 +16,9 @@ BFF 接口为 `GET /api/manga/:id/komga`（每卷的总条目数、已下载数�
 
 ## DSH 和 Docker 进度
 
-将 DSH 接入同一 Docker 网络，并设置与 Studio 相同的 `LN_VOLUME_ARCHIVE_URL`。也可在 DSH 插件配置中用 `mangaConnectionFile` 指向私有 JSON 文件，并在其中加入 `LN_VOLUME_ARCHIVE_URL`。DSH 原生工具 `manga_komga_status(mangaId, volume?)` 查询指定漫画的分卷、真实章节队列进度和已写入文件名。选定卷后调用 `manga_komga_download(mangaId, volume)` 提交任务。
+将 DSH 接入同一 Docker 网络，并设置与 Studio 相同的 `LN_VOLUME_ARCHIVE_URL`。也可在 DSH 插件配置中用 `mangaConnectionFile` 指向私有 JSON 文件，并在其中加入 `LN_VOLUME_ARCHIVE_URL`。DSH 原生工具 `manga_komga_status` 会返回归档方式、进度和实际文件名。选定一个卷号或一组按话归档的章节 ID 后，用 `manga_komga_download` 提交。
 
-Studio BFF 的 `GET /api/manga/:id/komga?volume=2` 可限定卷号。每卷的 `tasks` 返回 Suwayomi 队列中的章节状态和 `percent`。百分比对应正在下载的那一话。拿不到百分比时返回 `null`。全部条目下载齐后显示 `waiting_archive`，实际 CBZ 写入后显示 `archived`。
+Studio BFF 的 `GET /api/manga/:id/komga?volume=2` 可限定卷号，`?chapterIds=30,31` 可按章节 ID 查看单话。每卷的 `tasks` 和每话的 `task` 返回 Suwayomi 队列中的状态和 `percent`。百分比对应正在下载的那一话。拿不到百分比时返回 `null`。全部条目下载齐后显示 `waiting_archive`，实际 CBZ 写入后显示 `archived`。归档服务本次运行中的打包错误显示为 `archive_failed`。
 
 归档容器还提供内部只读 `GET http://suwayomi-volume-cbz:8788/downloads`，返回 Suwayomi 的当前队列。容器每 15 秒查看一次队列，只在状态或百分比变化时记录日志。运行 `docker compose -f docker/volume-cbz/compose.yml logs -f volume-cbz` 可以查看下载进度和 CBZ 生成记录。
 

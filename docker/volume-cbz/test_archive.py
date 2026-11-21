@@ -102,6 +102,27 @@ class VolumeArchiveTests(unittest.TestCase):
                 self.assertEqual(info.findtext("Number"), "1.5")
             self.assertEqual(series_directory(selected, {**manga, "title": "新名字"}), series)
 
+    def test_chapter_catalog_filters_ids_and_reports_export_failures(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manga = {"id": 1, "sourceId": "4", "title": "樣本"}
+            chapters = [chapter(5, "1 开始"), chapter(6, "2 等待", downloaded=False), chapter(7, "3 归档失败", page_count=4)]
+            client = FakeSuwayomi()
+            errors = {}
+            with patch.object(client, "manga", return_value=manga, create=True), patch.object(
+                client, "downloaded_mangas", return_value={1: manga}, create=True
+            ), patch.object(client, "manga_chapters", return_value=chapters, create=True), self.assertLogs(level="ERROR"):
+                self.assertEqual(run_once(client, root, archive_errors=errors), 1)
+                catalog = volume_catalog(client, root, 1, chapter_ids={"5", "7"}, archive_errors=errors)
+                page = volume_catalog(client, root, 1, limit=1, offset=1)
+            self.assertEqual(catalog["archiveMode"], "chapter")
+            self.assertEqual(catalog["chapterCount"], 3)
+            self.assertEqual(catalog["chapters"][0]["filename"], "第001话 [5].cbz")
+            self.assertTrue(catalog["chapters"][1]["archiveFailed"])
+            self.assertEqual(page["chapters"], [
+                {"id": "6", "name": "2 等待", "number": "2", "downloaded": False, "filename": None},
+            ])
+
     def test_legacy_folders_and_existing_unmanaged_series_are_not_mixed(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -278,6 +278,7 @@ function chapterDto(chapter) {
     id: asString(chapter.id) ?? '',
     mangaId: asString(chapter.mangaId) ?? '',
     name: asString(chapter.name) ?? '',
+    number: Number.isFinite(chapter.chapterNumber) && chapter.chapterNumber >= 0 ? chapter.chapterNumber : null,
     uploadDate: asIsoDate(chapter.uploadDate),
     read: chapter.isRead === true,
     downloaded: chapter.isDownloaded === true,

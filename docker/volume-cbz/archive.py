@@ -20,7 +20,7 @@ import tempfile
 import time
 from threading import Thread
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 from xml.etree import ElementTree
 from zipfile import BadZipFile, ZipFile
@@ -42,6 +42,7 @@ IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif", ".bmp", ".j
 DIGITS = str.maketrans("０１２３４５６７８９", "0123456789")
 SERIES_MARKER = ".studio-series.json"
 PAGE_SIZE = 100
+CATALOG_LIMIT = 5000
 CHAPTER_FIELDS = "id name isDownloaded pageCount"
 ARCHIVE_LIMIT = 2 * 1024**3
 
@@ -213,17 +214,25 @@ def chapter_number(name):
     return format(Decimal(number).normalize(), "f")
 
 
-def chapter_archives(chapters):
+def standalone_chapters(chapters):
     # A source with volume labels stays in volume mode to avoid duplicate Komga books.
     if any(VOLUME.match(row["name"].translate(DIGITS)) for row in chapters):
         return
     for row in chapters:
-        number = chapter_number(row["name"]) if row["isDownloaded"] is True else None
-        if number is None:
-            continue
-        whole, dot, fraction = number.partition(".")
-        filename = f"第{whole.zfill(3)}{dot}{fraction}话 [{int(row['id'])}].cbz"
-        yield filename, row["name"], number, [row]
+        number = chapter_number(row["name"])
+        if number is not None:
+            yield number, row
+
+
+def chapter_filename(number, chapter_id):
+    whole, dot, fraction = number.partition(".")
+    return f"第{whole.zfill(3)}{dot}{fraction}话 [{int(chapter_id)}].cbz"
+
+
+def chapter_archives(chapters):
+    for number, row in standalone_chapters(chapters):
+        if row["isDownloaded"] is True:
+            yield chapter_filename(number, row["id"]), row["name"], number, [row]
 
 
 def natural_key(value):
@@ -241,12 +250,12 @@ def series_title(manga):
 
 def read_series_marker(folder):
     marker = folder / SERIES_MARKER
-    if marker.is_symlink() or not marker.is_file():
-        return None
     try:
+        if marker.is_symlink() or not marker.is_file():
+            return None
         with marker.open("rb") as handle:
             return json.loads(handle.read(1024))
-    except (FileNotFoundError, UnicodeError, ValueError):
+    except (OSError, UnicodeError, ValueError):
         return None
 
 
@@ -361,48 +370,82 @@ def archive_path(directories, filename):
     return directories[0] / filename
 
 
-def volume_catalog(client, root, manga_id, previous=()):
+def archive_status(directories, filename, selected, failed):
+    destination = archive_path(directories, filename)
+    if destination.is_file() and not destination.is_symlink():
+        try:
+            with ZipFile(destination) as archive:
+                if archive.comment == archive_signature(selected):
+                    return {"filename": filename}
+        except BadZipFile:
+            return {"filename": None, "archiveFailed": True}
+    return {"filename": None, **({"archiveFailed": True} if failed else {})}
+
+
+def volume_catalog(client, root, manga_id, previous=(), *, offset=0, limit=20, chapter_ids=None, archive_errors=None):
     manga = client.manga(manga_id)
     if not manga or str(manga["sourceId"]) == "0":
-        return {"volumes": []}
-    chapters = list(islice(client.manga_chapters(manga_id), 5001))
-    if len(chapters) > 5000:
+        return {"volumes": [], "archiveMode": "unsupported", "chapters": [], "chapterCount": 0}
+    chapters = list(islice(client.manga_chapters(manga_id), CATALOG_LIMIT + 1))
+    if len(chapters) > CATALOG_LIMIT:
         raise ArchiveError("chapter catalog exceeds lookup limit")
     volumes = []
     directories = archive_directories(root, previous, manga)
     for number, selected in planned_volumes(chapters):
         filename = f"第{number:02}卷.cbz"
-        destination = archive_path(directories, filename)
-        archived = False
-        if destination.is_file() and not destination.is_symlink():
-            try:
-                with ZipFile(destination) as archive:
-                    archived = archive.comment == archive_signature(selected)
-            except BadZipFile:
-                pass
         volumes.append({
             "number": number,
             "chapterIds": [str(row["id"]) for row in selected],
             "downloaded": sum(row["isDownloaded"] is True for row in selected),
-            "filename": filename if archived else None,
+            **archive_status(directories, filename, selected, archive_errors and (manga_id, filename) in archive_errors),
         })
-    return {"volumes": volumes}
+    standalone = list(standalone_chapters(chapters))
+    mode = "volume" if volumes else "chapter" if standalone else "unsupported"
+    selected_chapters = ([(number, row) for number, row in standalone if str(row["id"]) in chapter_ids]
+                         if chapter_ids is not None else standalone[offset:offset + limit])
+    results = []
+    for number, row in selected_chapters:
+        filename = chapter_filename(number, row["id"])
+        results.append({
+            "id": str(row["id"]), "name": row["name"], "number": number, "downloaded": row["isDownloaded"],
+            **archive_status(directories, filename, [row], archive_errors and (manga_id, filename) in archive_errors),
+        })
+    return {"volumes": volumes, "archiveMode": mode, "chapters": results, "chapterCount": len(standalone)}
 
 
-def start_status_server(client, root, port, settings=None):
+def catalog_selection(query):
+    params = parse_qs(query, keep_blank_values=True, strict_parsing=True, max_num_fields=3)
+    if any(key not in ("chapterIds", "offset", "limit") or len(values) != 1 for key, values in params.items()):
+        raise ValueError("invalid archive query")
+    ids = params["chapterIds"][0].split(",") if "chapterIds" in params else None
+    if ids is not None and (len(ids) > 100 or any(not re.fullmatch(r"[1-9][0-9]{0,9}", id_) for id_ in ids)):
+        raise ValueError("invalid chapter IDs")
+    offset, limit = int(params.get("offset", ["0"])[0]), int(params.get("limit", ["20"])[0])
+    if not (0 <= offset <= CATALOG_LIMIT and 1 <= limit <= 100):
+        raise ValueError("invalid archive pagination")
+    return {"chapter_ids": set(ids) if ids is not None else None, "offset": offset, "limit": limit}
+
+
+def start_status_server(client, root, port, settings=None, archive_errors=None):
     class Handler(BaseHTTPRequestHandler):
         def setup(self):
             self.request.settimeout(5)
             super().setup()
 
         def do_GET(self):
-            match = re.fullmatch(r"/manga/([1-9][0-9]{0,9})/volumes", self.path)
+            url = urlsplit(self.path)
+            match = re.fullmatch(r"/manga/([1-9][0-9]{0,9})/volumes", url.path)
             try:
                 if self.path == "/downloads":
                     result = client.download_status()
                 elif match and int(match[1]) <= 2**31 - 1:
+                    try:
+                        selection = catalog_selection(url.query)
+                    except ValueError:
+                        self.send_error(400)
+                        return
                     current, previous = storage_roots(root, settings)
-                    result = volume_catalog(client, current, int(match[1]), previous)
+                    result = volume_catalog(client, current, int(match[1]), previous, archive_errors=archive_errors, **selection)
                 else:
                     self.send_error(404)
                     return
@@ -473,7 +516,17 @@ def write_cbz(client, root, manga, filename, title, number, chapters, directorie
     return True
 
 
-def run_once(client, root, previous=()):
+def run_once(client, root, previous=(), archive_errors=None):
+    def record_error(key):
+        if archive_errors is not None:
+            if len(archive_errors) >= CATALOG_LIMIT:
+                archive_errors.pop(next(iter(archive_errors)))
+            archive_errors[key] = True
+
+    def clear_error(key):
+        if archive_errors is not None:
+            archive_errors.pop(key, None)
+
     mangas = client.downloaded_mangas()
     failures = 0
     exported = 0
@@ -482,15 +535,21 @@ def run_once(client, root, previous=()):
             chapters = list(client.manga_chapters(manga_id))
             directories = archive_directories(root, previous, manga)
             for volume, selected in complete_volumes(chapters):
+                key = (manga_id, f"第{volume:02}卷.cbz")
                 try:
                     exported += archive_volume(client, root, manga, volume, selected, directories=directories)
+                    clear_error(key)
                 except (ArchiveError, OSError, BadZipFile, RuntimeError) as exc:
+                    record_error(key)
                     failures += 1
                     logging.error("manga %s volume %s: %s", manga_id, volume, exc)
             for filename, title, number, selected in chapter_archives(chapters):
+                key = (manga_id, filename)
                 try:
                     exported += write_cbz(client, root, manga, filename, title, number, selected, directories)
+                    clear_error(key)
                 except (ArchiveError, OSError, BadZipFile, RuntimeError) as exc:
+                    record_error(key)
                     failures += 1
                     logging.error("manga %s chapter %s: %s", manga_id, selected[0]["id"], exc)
         except (ArchiveError, KeyError, TypeError, ValueError) as exc:
@@ -548,15 +607,16 @@ def main():
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             for stale in args.output.glob(".suwayomi-*.tmp"):
                 stale.unlink()
+            archive_errors = {}
             if args.status_port:
-                start_status_server(client, args.output, args.status_port, args.settings_file)
+                start_status_server(client, args.output, args.status_port, args.settings_file, archive_errors)
             if args.progress_interval:
                 Thread(target=log_download_progress, args=(client, args.progress_interval), daemon=True).start()
             logging.info("Suwayomi volume exporter started (interval: %ds)", args.interval)
             while True:
                 try:
                     current, previous = storage_roots(args.output, args.settings_file)
-                    failures = run_once(client, current, previous)
+                    failures = run_once(client, current, previous, archive_errors)
                 except (ArchiveError, OSError, ValueError, TypeError, KeyError) as exc:
                     logging.error("export scan failed: %s", exc)
                     failures = 1

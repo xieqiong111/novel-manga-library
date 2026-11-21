@@ -26,8 +26,16 @@ const runtime = {
 } as unknown as PluginRuntime
 
 const komga = {
-  status: vi.fn(async () => ({ available: true, volumes: [{ number: 2, state: 'downloading', tasks: [{ percent: 61 }] }] })),
+  status: vi.fn<MangaKomga['status']>(async () => ({
+    available: true, volumes: [{ number: 2, total: 2, downloaded: 1, filename: null, state: 'downloading', tasks: [
+      { id: '41', mangaId: '22', title: 'Example Manga', chapterId: '41', chapterName: '第2卷 第2话',
+        state: 'running', upstreamState: 'DOWNLOADING', percent: 61 },
+    ] }],
+  })),
   download: vi.fn(async () => ({ queued: ['41'], skipped: [], completed: [], filename: null })),
+  downloadChapters: vi.fn(async () => ({ queued: [], skipped: ['41'], completed: [], filename: null,
+    archived: [{ chapterId: '41', filename: '第007话 [41].cbz' }] })),
+
 }
 
 let ctx: Context
@@ -112,6 +120,28 @@ describe('native manga tools', () => {
       ok: true, queued: ['41'], filename: null,
     })
     expect(komga.download).toHaveBeenCalledWith('22', 2)
+  })
+
+  it('explains the difference between a chapter download and its CBZ and supports selected chapter IDs', async () => {
+    komga.status.mockResolvedValueOnce({
+      available: true, archiveMode: 'chapter', volumes: [], chapters: [
+        { id: '41', number: '7', name: '第7话', downloaded: true, filename: null, state: 'waiting_archive', task: null },
+        { id: '42', number: '8', name: '第8话', downloaded: true, filename: null, state: 'archive_failed', task: null },
+      ],
+    })
+    const result = await call('manga_komga_status', { mangaId: '22', chapterIds: ['41', '42'] })
+    expect(result).toMatchObject({
+      archiveMode: 'chapter', notice: expect.stringContaining('待打包 1，下载中 0，排队 0，下载失败 0，归档失败 1'),
+    })
+    expect(komga.status).toHaveBeenLastCalledWith('22', undefined, { chapterIds: ['41', '42'], offset: undefined, limit: undefined })
+    const archived = await call('manga_komga_download', { mangaId: '22', chapterIds: ['41'] })
+    expect(archived).toMatchObject({ ok: true, summary: expect.stringContaining('确认 CBZ 1 个'),
+      next: { tool: 'manga_komga_status', args: { mangaId: '22', chapterIds: ['41'] } } })
+    expect(komga.downloadChapters).toHaveBeenCalledExactlyOnceWith('22', ['41'])
+    expect(await call('manga_komga_download', { mangaId: '22', chapterIds: ['41'], volume: 7 })).toMatchObject({
+      ok: false, error: { code: 'MANGA_ARCHIVE_SELECTION_REQUIRED' },
+    })
+    expect(komga.downloadChapters).toHaveBeenCalledOnce()
   })
 
   it('reports an unconfirmed enqueue as unresolved without requesting an automatic retry', async () => {

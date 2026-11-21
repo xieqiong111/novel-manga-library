@@ -20,7 +20,7 @@ class FolderError extends Error {
   }
 }
 
-// Komga and Studio use the same NAS path labels. Only a shared subtree can be selected.
+// Sync the exact Komga library path within the configured mount.
 export function komgaSubfolder(mountLabel, root) {
   if (typeof root !== 'string' || !mountLabel || !path.posix.isAbsolute(mountLabel)) return null
   let library
@@ -31,9 +31,7 @@ export function komgaSubfolder(mountLabel, root) {
   }
   if (!path.posix.isAbsolute(library) || library.includes('\\') || /[\x00-\x1f\x7f]/.test(library)) return null
   const relative = path.posix.relative(mountLabel, library)
-  if (validSubfolder(relative)) return relative
-  if (validSubfolder(path.posix.relative(library, mountLabel))) return ''
-  return null
+  return validSubfolder(relative) ? relative : null
 }
 
 function reply(res, status, body) {
@@ -92,6 +90,7 @@ export function createDownloadFoldersApi(settings, getKomga, scan = createKomgaS
       return true
     } catch (error) {
       if (error.code === 'ENOENT') return false
+      if (['EACCES', 'EPERM'].includes(error.code)) return true
       throw error
     }
   }

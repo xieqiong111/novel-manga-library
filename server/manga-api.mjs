@@ -203,7 +203,12 @@ export function createMangaApi(client, logger = { warn() {} }, { missingBffAuth 
         if (segments.length === 2 && segments[1] === 'komga') {
           if (method === 'GET') {
             const volume = params.has('volume') ? intParam(params, 'volume', 1, 1, 9999) : undefined
-            sendJson(res, 200, await komga.status(mangaId, volume))
+            const selection = {
+              ...(params.has('chapterIds') ? { chapterIds: queryParam(params, 'chapterIds', { maxLength: 1100 }).split(',') } : {}),
+              ...(params.has('offset') ? { offset: intParam(params, 'offset', 0, 0, 5000) } : {}),
+              ...(params.has('limit') ? { limit: intParam(params, 'limit', 20, 1, 100) } : {}),
+            }
+            sendJson(res, 200, await komga.status(mangaId, volume, selection))
           } else {
             const { volume } = await readJson(req)
             if (volume === undefined) throw new MangaApiError(400, 'INVALID_VOLUME', '请选择有效卷号。')

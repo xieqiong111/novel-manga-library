@@ -37,6 +37,7 @@ export interface SuwayomiChapter {
   id: string
   mangaId: string
   name: string
+  number: number | null
   uploadDate: string | null
   read: boolean
   downloaded: boolean
