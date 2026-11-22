@@ -99,6 +99,17 @@ export function chineseMangaSummary(manga) {
   return chineseText(description) ? description : ''
 }
 
+export function mangaVolumeSynopsis(data, saved, seriesSummary) {
+  const official = [data?.subject?.summary, data?.metadata?.summary].map((value) => text(value, 2000)).find(chineseText)
+  if (official) return { summary: official, summarySource: 'bangumi' }
+  const localized = text(saved?.text, 2000)
+  if (['translation', 'series'].includes(saved?.source) && chineseText(localized)) {
+    return { summary: localized, summarySource: saved.source }
+  }
+  const series = text(seriesSummary, 2000)
+  return chineseText(series) ? { summary: series, summarySource: 'series' } : { summary: '', summarySource: null }
+}
+
 function changes(current, input, scope, subject, options) {
   const patch = {}
   function field(name, value) {
@@ -200,7 +211,8 @@ export function withBangumiArchiveRecovery(metadata, getIntegrations) {
   }
 }
 
-export function createBangumiKomga({ url, requestMetadata, komga, getOptions, getBangumiProxy, getManga, scanAfterApply, fetchImpl = fetch }) {
+export function createBangumiKomga({ url, requestMetadata, komga, getOptions, getBangumiProxy, getManga, getVolumeSynopsis,
+  scanAfterApply, fetchImpl = fetch }) {
   const preferences = () => getOptions?.() ?? defaultScrapeOptions
   const previews = new Map()
   const writes = new Set()
@@ -420,7 +432,7 @@ export function createBangumiKomga({ url, requestMetadata, komga, getOptions, ge
     return apply({ previewId: planned.previewId }, ensureCurrent)
   }
 
-  async function autoVolume({ libraryId, seriesId, bookId, subjectId: volumeId }, ensureCurrent, connection) {
+  async function autoVolume({ libraryId, seriesId, bookId, subjectId: volumeId, mangaId }, ensureCurrent, connection) {
     if (!subjectId(volumeId) || !komgaId(seriesId) || !komgaId(bookId)) {
       throw new MetadataError(400, 'INVALID_VOLUME_SUBJECT', '未确认该卷的 Bangumi 条目或 Komga 章节。')
     }
@@ -439,7 +451,18 @@ export function createBangumiKomga({ url, requestMetadata, komga, getOptions, ge
       throw new MetadataError(502, 'INVALID_METADATA_RESPONSE', 'Bangumi 返回的单行本条目与请求不符。')
     }
     const input = { ...data.metadata }
-    if (japaneseText(text(input.summary, 20000))) delete input.summary
+    delete input.summary
+    const existing = text(target.metadata.summary, 20000)
+    if (target.metadata.summaryLock !== true && (!chineseText(existing) || existing.startsWith('作品简介\n'))) {
+      let synopsis = mangaVolumeSynopsis(data)
+      if (!synopsis.summary && mangaId) {
+        synopsis = mangaVolumeSynopsis(data, await getVolumeSynopsis?.(String(mangaId), volumeId))
+      }
+      if (!synopsis.summary && !chineseText(existing) && mangaId && getManga) {
+        synopsis = mangaVolumeSynopsis(data, null, chineseMangaSummary(await getManga(mangaId).catch(() => null)))
+      }
+      if (synopsis.summary) input.summary = synopsis.summarySource === 'series' ? `作品简介\n${synopsis.summary}` : synopsis.summary
+    }
     const patch = changes(target.metadata, input, 'book', subject, options)
     const isbn = text(data.isbn, 40).replace(/[\s-]/g, '').toUpperCase()
     if (/^(第\d{2,4}卷)(?: - \1)?$/u.test(target.name) && /^(?:\d{13}|\d{9}[\dX])$/.test(isbn) &&

@@ -1,5 +1,5 @@
 import { readDownloadFolders } from '../dist/core/download-folders.js'
-import { MetadataError } from './bangumi-komga.mjs'
+import { chineseMangaSummary, mangaVolumeSynopsis, MetadataError } from './bangumi-komga.mjs'
 import { bindMangaTitle, readMangaBangumiBinding, resolveDownloadSubject } from './bangumi-download.mjs'
 import { sameBangumiTitle } from './bangumi-title.mjs'
 import { bangumiCoverUrl } from './bangumi-cover.mjs'
@@ -34,6 +34,17 @@ function publisherTitle(value) {
 
 function isbnOf(value) {
   return typeof value === 'string' ? value.replace(/[^0-9]/g, '') : ''
+}
+
+async function matchedCatalog(file, mangaId) {
+  const [record, binding] = await Promise.all([readVolumeCatalog(file, mangaId), readMangaBangumiBinding(file, mangaId)])
+  return record && binding && record.subjectId === binding.subjectId && record.sourceId === binding.sourceId &&
+    record.mangaId === mangaId ? { record, binding } : null
+}
+
+export async function readMangaVolumeSynopsis(file, mangaId, subjectId) {
+  const matched = await matchedCatalog(file, mangaId)
+  return matched?.record.volumeMetadata?.find((row) => row.subjectId === subjectId)?.localizedSynopsis
 }
 
 export function createMangaVolumeCatalogApi({ settings, mangaClient, metadata, fetchImpl = fetch }) {
@@ -80,10 +91,9 @@ export function createMangaVolumeCatalogApi({ settings, mangaClient, metadata, f
   }
 
   async function edition(mangaId, number, cover = false) {
-    const [record, binding] = await Promise.all([readVolumeCatalog(file, mangaId), readMangaBangumiBinding(file, mangaId)])
-    const row = record?.volumeMetadata?.find((entry) => entry.number === number)
-    if (!row || !binding || record.subjectId !== binding.subjectId || record.sourceId !== binding.sourceId ||
-        record.mangaId !== mangaId) {
+    const matched = await matchedCatalog(file, mangaId)
+    const row = matched?.record.volumeMetadata?.find((entry) => entry.number === number)
+    if (!row) {
       throw new MetadataError(404, 'VOLUME_METADATA_UNMATCHED', '这一卷尚未匹配 Bangumi 单行本。')
     }
     if (cover) return metadata('volume-cover', { subjectId: row.subjectId })
@@ -94,9 +104,12 @@ export function createMangaVolumeCatalogApi({ settings, mangaClient, metadata, f
       const text = string(value, max)
       return /\p{Script=Han}/u.test(text) && !/[\p{Script=Hiragana}\p{Script=Katakana}]/u.test(text) ? text : ''
     }
-    return { number, subjectId: row.subjectId, title: chinese(detail.subject.nameCn) || `${binding.title} · 第 ${number} 卷`,
+    let synopsis = mangaVolumeSynopsis(detail, row.localizedSynopsis)
+    if (!synopsis.summary) synopsis = mangaVolumeSynopsis(detail, null,
+      chineseMangaSummary(await mangaClient.getManga(mangaId).catch(() => null)))
+    return { number, subjectId: row.subjectId, title: chinese(detail.subject.nameCn) || `${matched.binding.title} · 第 ${number} 卷`,
       isbn: isbnOf(detail.isbn) || row.isbn || null, date: string(detail.subject.date, 20) || row.date || null,
-      summary: chinese(detail.subject.summary, 500), hasCover: Boolean(bangumiCoverUrl(detail.coverUrl)) }
+      ...synopsis, hasCover: Boolean(bangumiCoverUrl(detail.coverUrl)) }
   }
 
   async function update(mangaId, body) {

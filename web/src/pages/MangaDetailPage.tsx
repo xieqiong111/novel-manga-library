@@ -355,7 +355,10 @@ function VolumeEdition({ id, record }: { id: string; record: { number: number; s
       </p>
       {loading && <p role="status" className="text-ink-soft">读取卷资料…</p>}
       {error && <p className="text-ink-soft">暂时无法读取详细卷资料。{error}</p>}
-      {data?.summary && <p className="line-clamp-4 break-words text-ink-soft">{data.summary}</p>}
+      {data?.summary ? <p className="whitespace-pre-wrap break-words text-ink-soft">
+        <strong>{data.summarySource === 'series' ? '作品简介' : data.summarySource === 'translation' ? '本卷简介（中文译述）' : '本卷简介'}</strong>
+        {' '}{data.summary}
+      </p> : data && !loading && <p className="text-ink-soft">暂未取得中文简介。</p>}
     </div>
   </div>
 }

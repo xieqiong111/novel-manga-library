@@ -5,7 +5,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { expect, it, vi } from 'vitest'
 import { withBangumiArchiveRecovery } from '../../server/bangumi-komga.mjs'
 import { createMangaVolumeCatalogApi } from '../../server/manga-volume-api.mjs'
-import { mergeVolumeSources } from '../../server/manga-volume-catalog.mjs'
+import { mergeVolumeSources, saveMangaVolumeCatalog } from '../../server/manga-volume-catalog.mjs'
 import { readPublisherVolume } from '../../server/manga-publisher.mjs'
 import { openTomeVolumes } from '../../server/opentome-volumes.mjs'
 import { mangaVolumeGroups } from '../../web/src/data/mangaVolumes'
@@ -53,7 +53,7 @@ it('exposes matched volume metadata and cover even without a chapter catalog', a
     const metadata = vi.fn(async (action) => {
       if (action === 'related-volumes') return { volumes: [{ id: 9478, name: 'ベルセルク (1)' }] }
       if (action === 'volume-cover') return cover
-      return { subject: { id: 9478, nameCn: '', date: '1990-11-26', summary: '日本語の紹介' },
+      return { subject: { id: 9478, nameCn: '', date: '1990-11-26', summary: '大きな剣を背負い旅をする。' },
         isbn: '978-4-592-13691-4', coverUrl: 'https://lain.bgm.tv/pic/cover/l/aa/ab/9478.jpg' }
     })
     const service = createMangaVolumeCatalogApi({ settings: { config: { downloadFoldersFile } },
@@ -62,10 +62,14 @@ it('exposes matched volume metadata and cover even without a chapter catalog', a
     expect(volumes).toEqual([])
     expect(mangaVolumeGroups(null, [], [], volumeMetadata.map((row) => row.number)).groups).toEqual([{ number: 1, chapters: [] }])
     await expect(service.edition('3323', 1)).resolves.toEqual({ number: 1, subjectId: 9478, title: '剑风传奇 · 第 1 卷',
-      isbn: '9784592136914', date: '1990-11-26', summary: '', hasCover: true })
+      isbn: '9784592136914', date: '1990-11-26', summary: '', summarySource: null, hasCover: true })
     await expect(service.edition('3323', 1, true)).resolves.toBe(cover)
     await expect(service.edition('3323', 2, true)).rejects.toMatchObject({ code: 'VOLUME_METADATA_UNMATCHED' })
     expect(metadata.mock.calls.map(([action]) => action)).toEqual(['related-volumes', 'volume-detail', 'volume-cover'])
+    await saveMangaVolumeCatalog(downloadFoldersFile, manga, { subjectId: 9477 }, [], [
+      { number: 1, subjectId: 9478, localizedSynopsis: { text: '剑士背着巨剑踏上旅途。', source: 'translation' } },
+    ])
+    await expect(service.edition('3323', 1)).resolves.toMatchObject({ summary: '剑士背着巨剑踏上旅途。', summarySource: 'translation' })
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 

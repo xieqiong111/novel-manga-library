@@ -129,7 +129,7 @@ describe('after a manga CBZ is saved', () => {
       }
       await worker.tick({ currentKomga: () => client, metadata, mangaVolumes, scan: vi.fn() })
       expect(metadata).toHaveBeenCalledWith('auto-volume', {
-        libraryId: 'library', seriesId: 'work', bookId: 'book', subjectId: 143034,
+        libraryId: 'library', seriesId: 'work', bookId: 'book', subjectId: 143034, mangaId: '22',
       }, expect.any(Function), undefined)
       expect(client.excludeVolumeFolder).toHaveBeenCalledWith('library', root + '/作品/第01卷')
       expect(worker.status(file)).toMatchObject({ phase: 'done', message: expect.stringContaining('已核对作品下的卷元数据') })

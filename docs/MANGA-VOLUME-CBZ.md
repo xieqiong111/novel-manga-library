@@ -32,6 +32,8 @@ Studio 先绑定 Bangumi 漫画系列和 Suwayomi 的确切来源与作品。出
 
 已匹配的 Bangumi 单行本可直接选卷查看封面、ISBN 和出版日期。分话目录另行核对，卷资料匹配后即可显示。
 
+卷简介优先使用 Bangumi 的中文内容，其次使用按条目核对的中文译述。使用漫画源的作品简介补充时，会标为「作品简介」。Komga 保留已有的中文简介及锁定字段。
+
 《为美好的世界献上祝福！》示例的正篇目录使用 [第 1–20 卷参考目录](https://it.wikipedia.org/wiki/Capitoli_di_Konosuba!_-_This_Wonderful_World) 和 [第 21 卷出版社试读](https://yenpress.com/titles/9798855433692-konosuba-god-s-blessing-on-this-wonderful-world-vol-21-manga)。第 22–23 卷的 [参考话号](https://konosuba.fandom.com/wiki/Category:Konosuba_Chapters) 目前标为待核验。
 
 ### 卷目录 API

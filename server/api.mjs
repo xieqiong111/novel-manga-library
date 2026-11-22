@@ -20,7 +20,7 @@ import { isDshReadRoute } from './integrations.mjs'
 import { createKomgaApi } from './komga-api.mjs'
 import { createBangumiKomga, MetadataError, withBangumiArchiveRecovery } from './bangumi-komga.mjs'
 import { bindMangaTitle, readMangaBangumiBinding, resolveDownloadSubject } from './bangumi-download.mjs'
-import { createMangaVolumeCatalogApi } from './manga-volume-api.mjs'
+import { createMangaVolumeCatalogApi, readMangaVolumeSynopsis } from './manga-volume-api.mjs'
 import { createKomgaScanner } from './komga-scan.mjs'
 import { createSavedFileHistory, readDshTasks } from './download-history.mjs'
 import { authorizeStudioJob, isStudioJobCredential, studioJobRoute } from './studio-jobs.mjs'
@@ -127,6 +127,7 @@ export function createApi(
     requestMetadata: settings.bangumiWorker?.request,
     komga: currentKomga,
     getManga: async (id) => mangaClient.getManga(id),
+    getVolumeSynopsis: (id, subjectId) => readMangaVolumeSynopsis(settings.config.downloadFoldersFile, id, subjectId),
     getOptions: () => settings.integrations?.preferences?.scrapeOptions,
     getBangumiProxy: () => settings.integrations?.bangumi?.proxyUrl,
     scanAfterApply: async (client, libraryId) => settings.integrations?.preferences?.refreshMode === 'after-sync-or-scrape'

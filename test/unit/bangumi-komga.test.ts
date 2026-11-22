@@ -65,10 +65,25 @@ function fixture() {
     return Response.json({ subject, metadata, source: 'bangumi-archive', archiveVersion: '2026-11-17T21:04:20Z' })
   })
   const run = createBangumiKomga({ url: 'http://bangumikomga:8091', komga: () => komga, fetchImpl: adapterFetch })
-  return { run, state, adapterFetch, patchSeries, patchBook, komga, scan, posters, upload }
+  return { run, state, book, adapterFetch, patchSeries, patchBook, komga, scan, posters, upload }
 }
 
 describe('BangumiKomga metadata', () => {
+  it('uses the matched volume translation without replacing a Chinese Komga synopsis', async () => {
+    const { komga, book, patchBook } = fixture()
+    const getVolumeSynopsis = vi.fn(async () => ({ text: '剑士背着巨剑踏上旅途。', source: 'translation' }))
+    const run = createBangumiKomga({ komga: () => komga, getVolumeSynopsis, requestMetadata: async () => ({
+      status: 200, payload: { subject: { ...subject, summary: '大きな剣を背負い旅をする。' }, metadata: {} },
+    }) })
+    const input = { libraryId: 'library-b', seriesId: 'series-a', bookId: 'book-a', mangaId: '111', subjectId: 123 }
+    await run('auto-volume', input, () => {})
+    expect(getVolumeSynopsis).toHaveBeenCalledExactlyOnceWith('111', 123)
+    expect(patchBook).toHaveBeenLastCalledWith(expect.objectContaining({ summary: '剑士背着巨剑踏上旅途。' }))
+    book.summary = '用户自己写的中文简介。'
+    await run('auto-volume', input, () => {})
+    expect(patchBook.mock.lastCall?.[0]).not.toHaveProperty('summary')
+    expect(getVolumeSynopsis).toHaveBeenCalledOnce()
+  })
   it('uses the Chinese series title and preserves a Chinese introduction when Bangumi returns Japanese', async () => {
     const { komga, state, patchSeries } = fixture()
     state.summaryLock = false

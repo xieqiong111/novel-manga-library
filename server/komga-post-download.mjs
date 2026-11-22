@@ -239,7 +239,7 @@ export async function openKomgaPostDownload({ settings, archiveHistory, logger, 
               const subjectId = await mangaVolumes.volumeSubject(job.mangaId, binding, number, connection)
               if (!subjectId) return null
               const result = await metadata('auto-volume', { libraryId: library.id, seriesId: series.id,
-                bookId: series.coverBook.id, subjectId }, ensureCurrent, connection)
+                bookId: series.coverBook.id, subjectId, mangaId: job.mangaId }, ensureCurrent, connection)
               await mangaVolumes.rememberVolume(job.mangaId, binding, number, result)
               return result
             })
