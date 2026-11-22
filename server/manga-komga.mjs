@@ -133,8 +133,8 @@ export function createMangaKomga(client, getVolumes, archiveUrl) {
       const requested = chapterIds.filter((id) => !entries.get(id).downloaded && !entries.get(id).filename && !entries.get(id).legacyVolume)
       const skipped = chapterIds.filter((id) => !requested.includes(id))
       const archived = chapterIds.flatMap((id) => {
-        const { filename } = entries.get(id)
-        return filename ? [{ chapterId: id, filename }] : []
+        const { filename, relativeFile } = entries.get(id)
+        return filename ? [{ chapterId: id, filename, ...(relativeFile ? { relativeFile } : {}) }] : []
       })
       if (!requested.length) return { ...emptyDownload(skipped), archived, ...(bangumi ? { bangumi } : {}) }
       const result = await client.download({ mangaId, chapterIds: requested })

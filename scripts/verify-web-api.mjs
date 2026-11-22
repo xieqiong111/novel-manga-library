@@ -327,6 +327,13 @@ try {
     library.status === 200 && !!entry && entry.integrity === 'passed',
     `${library.body?.length} entries · ${entry?.fileName}`)
   check('library item is not marked as mock', entry && entry.isMock !== true)
+  const saved = entry?.location
+  const detailTask = taskId ? await request(appPort, '/api/tasks/' + encodeURIComponent(taskId)) : null
+  check('completed task and library expose the same on-disk EPUB location',
+    Boolean(saved && (await stat(saved.storagePath).catch(() => null))?.isFile()
+      && saved.relativePath?.endsWith('.epub')
+      && detailTask?.body?.artifacts?.some((item) => item.id === entry.id
+        && item.location?.storagePath === saved.storagePath)))
   check('library item exposes author and volume count',
     entry && typeof entry.author === 'string' && entry.author.length > 0 && entry.volumes === 1,
     `${entry?.author} · ${entry?.volumes} volume(s)`)

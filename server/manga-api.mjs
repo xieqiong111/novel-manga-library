@@ -98,9 +98,13 @@ function requiredId(value, field) {
  * the shared LN_BFF_TOKEN check before dispatching to this handler.
  */
 export function createMangaApi(client, logger = { warn() {} },
-  { missingBffAuth = false, getVolumes, archiveHistory = createMangaArchiveHistory(), postDownload, bindBangumi } = {}) {
+  { missingBffAuth = false, getVolumes, archiveHistory = createMangaArchiveHistory(), postDownload, bindBangumi, locateArchive } = {}) {
   const komga = createMangaKomga(client, getVolumes)
   const requestBuckets = new Map()
+  async function withLocation(item, relativeFile = item.relativeFile) {
+    const location = relativeFile && await locateArchive?.(relativeFile)
+    return location ? { ...item, location } : item
+  }
   function limitRequest(req, bucketName, maxRequests) {
     const now = Date.now()
     const ip = req.socket?.remoteAddress ?? 'unknown'
@@ -194,10 +198,12 @@ export function createMangaApi(client, logger = { warn() {} },
           : { queue: [], count: 0, queueError: 'Suwayomi 队列暂不可用。' }
         if (archived.status === 'fulfilled') {
           const { history, nextBefore } = archived.value
-          sendJson(res, 200, { ...result, history: history.map((task) => {
+          const completed = await Promise.all(history.map(async (task) => {
             const followUp = task.archive.file && postDownload?.(task.archive.file)
-            return followUp ? { ...task, followUp } : task
-          }), nextBefore })
+            const archive = await withLocation(task.archive, task.archive.file)
+            return { ...task, archive, ...(followUp ? { followUp } : {}) }
+          }))
+          sendJson(res, 200, { ...result, history: completed, nextBefore })
         } else {
           sendJson(res, 200, { ...result, historyError: '漫画完成记录暂不可用。' })
         }
@@ -236,13 +242,17 @@ export function createMangaApi(client, logger = { warn() {} },
               ...(params.has('offset') ? { offset: intParam(params, 'offset', 0, 0, 5000) } : {}),
               ...(params.has('limit') ? { limit: intParam(params, 'limit', 20, 1, 100) } : {}),
             }
-            sendJson(res, 200, await komga.status(mangaId, volume, selection))
+            const status = await komga.status(mangaId, volume, selection)
+            if (status.chapters) status.chapters = await Promise.all(status.chapters.map((chapter) => withLocation(chapter)))
+            sendJson(res, 200, status)
           } else {
             const { volume, chapterIds, bangumiSubjectId, sourceTitle } = await readJson(req)
             if (volume !== undefined) throw new MangaApiError(409, 'VOLUME_DOWNLOAD_DISABLED', '漫画下载现按章进行，请使用章节 ID。')
             const name = jobsCredential || bangumiSubjectId !== undefined
               ? () => bindBangumi(mangaId, bangumiSubjectId, sourceTitle) : undefined
-            sendJson(res, 200, await komga.downloadChapters(mangaId, chapterIds, name))
+            const result = await komga.downloadChapters(mangaId, chapterIds, name)
+            result.archived = await Promise.all(result.archived.map((chapter) => withLocation(chapter)))
+            sendJson(res, 200, result)
           }
           return true
         }

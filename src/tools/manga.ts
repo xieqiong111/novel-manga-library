@@ -10,13 +10,18 @@ import { canonical, jsonOutput, ok } from './common.js'
 type MangaRuntime = PluginRuntime & { suwayomi: SuwayomiClient }
 
 const MAX_PAGE_SIZE = 100
+const archivePolicy = {
+  mode: 'automatic-per-chapter',
+  agentAction: 'poll-only',
+  instruction: '每话下载完成后由归档服务自动生成一个 CBZ。Agent 只提交下载和查询状态，不调用 Docker、终端、ZIP 或脚本手动打包。归档失败时报告错误。',
+}
 
 const automaticArchive = [
   'In managed mode Studio owns all task execution. Follow the reported API results and do not start a local downloader.',
-  'When the archive service is enabled, the Docker worker automatically packages each completed chapter into its own CBZ. Never wait for a volume or manually package pages.',
+  'The archive service automatically packages each completed chapter as one CBZ. Your only follow-up is to poll the Studio tools. Do not call Docker, shell commands, zip utilities, or scripts to package files. Report archive failures.',
   'Use actual chapter IDs. Select individually downloadable chapters even when their names contain volume markers. If a source only has whole-volume entries, choose a source with separate chapters.',
   'The files appear directly in the work-title folder under the configured manga output directory. Existing volume archives are preserved.',
-  'Report actual queue results, then use manga_komga_status to confirm archived and filename. Confirm Komga indexing separately.',
+  'Use manga_komga_status for the archived state and location.nasPath when present. A name without a verified location is insufficient to claim an absolute path. Confirm Komga indexing separately.',
 ].join(' ')
 
 function bounded(value: number | undefined, fallback: number, max = MAX_PAGE_SIZE): number {
@@ -101,7 +106,8 @@ function downloadReport(
     failed,
     summary,
     next,
-    archiveNotice: '启用 Docker 归档时，每章下载完成就自动生成一个 CBZ。用 manga_komga_status 确认文件名后再报告已打包。',
+    archivePolicy,
+    archiveNotice: '用 manga_komga_status 核对已归档章节和 location.nasPath。路径缺失时说明尚未核实。',
   }
   if (unconfirmed.length || failed.length) return {
     ...report, ok: false, error: {
@@ -157,7 +163,7 @@ export function registerMangaTools(ctx: Context, runtime: PluginRuntime, komga: 
   ctx.tools.register(defineTool({
     name: 'manga_komga_status',
     description: [
-      'Inspect the selected manga source before and after downloading. Reports per-chapter states and confirmed CBZ filenames.',
+      'Inspect the selected manga source before and after downloading. Saved files include location.nasPath when configured. Use the returned location instead of guessing or searching Docker.',
       'waiting_archive means the pages have downloaded but the CBZ is pending. archive_failed means packaging failed.',
       'If unavailable or unsupported, report the limitation. An empty queue does not prove download or archive completion.',
     ].join(' '),
@@ -179,7 +185,7 @@ export function registerMangaTools(ctx: Context, runtime: PluginRuntime, komga: 
             query: { ...selection, chapterIds: selection?.chapterIds?.join(',') },
           })
           : selection ? await komga.status(mangaId, undefined, selection) : await komga.status(mangaId)
-        return ok({ ...status, notice: archiveNotice(status) })
+        return ok({ ...status, archivePolicy, notice: archiveNotice(status) })
       })
     },
   }))
@@ -334,7 +340,7 @@ export function registerMangaTools(ctx: Context, runtime: PluginRuntime, komga: 
           ? await studioJob<DownloadResult>(`/api/manga/${encodeURIComponent(mangaId)}/komga`,
             { method: 'POST', body: { chapterIds, bangumiSubjectId: args.bangumiSubjectId, sourceTitle: args.sourceTitle } })
           : await client(runtime).download({ mangaId, chapterIds })
-        return downloadReport(result, { tool: 'manga_tasks', args: { mangaId } })
+        return downloadReport(result, { tool: 'manga_komga_status', args: { mangaId, chapterIds } })
       })
     },
   }))
@@ -344,7 +350,7 @@ export function registerMangaTools(ctx: Context, runtime: PluginRuntime, komga: 
     description: [
       'Inspect the Suwayomi download queue and the completed chapter history, or cancel queued chapters.',
       'Actions are status (default), list, and cancel. Cancel requires chapterIds from the queue.',
-      'Completed history includes the confirmed archive state and relative CBZ path. Pass nextBefore as before for older records.',
+      'Completed history includes archive.file and verified archive.location when available. Read archive.location.nasPath to report the NAS save location. The service handles CBZ packing automatically. Pass nextBefore as before for older records.',
     ].join(' '),
     parameters: {
       action: { type: 'string', description: 'status (default), list, or cancel.' },
@@ -370,7 +376,8 @@ export function registerMangaTools(ctx: Context, runtime: PluginRuntime, komga: 
             : await studioJob<{ queue: SuwayomiTask[]; history?: unknown[] }>('/api/manga/downloads', {
               query: { mangaId: mangaId ?? undefined, before: args.before },
             })
-          return ok({ ...result, executor: 'studio', notice: '请按 Studio 返回的队列、完成记录、CBZ 文件及 Komga 刷新状态进行下一步。' })
+          return ok({ ...result, archivePolicy, executor: 'studio',
+            notice: '仅用 Studio 查询进度。文件保存位置见 archive.location.nasPath；没有核实的路径时请如实说明。' })
         }
         const result = await client(runtime).tasks({ action: action as 'status' | 'list' | 'cancel', chapterIds })
         const queue = mangaId ? result.queue.filter((task) => task.mangaId === mangaId) : result.queue
@@ -378,7 +385,7 @@ export function registerMangaTools(ctx: Context, runtime: PluginRuntime, komga: 
         const combined = history && 'history' in history && history.history.length > 0
           ? `本页完成记录 ${history.history.length} 章。请按实际归档状态报告文件。`
           : queueNotice(queue, action === 'cancel')
-        return ok({ ...result, ...history, queue, count: queue.length, notice: combined })
+        return ok({ ...result, ...history, queue, count: queue.length, archivePolicy, notice: combined })
       })
     },
   }))

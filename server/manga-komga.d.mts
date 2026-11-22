@@ -2,6 +2,8 @@ import type { SuwayomiClient, SuwayomiTask } from './suwayomi-client.mjs'
 
 type MangaArchiveState = 'idle' | 'archived' | 'waiting_archive' | 'archive_failed' | 'failed' | 'downloading' | 'queued' | 'in_legacy_volume'
 
+interface DownloadLocation { relativePath: string; storagePath: string; nasPath?: string }
+
 export interface MangaArchiveSelection {
   chapterIds?: string[]
   offset?: number
@@ -29,6 +31,8 @@ export interface MangaArchiveStatus {
     downloaded: boolean
     filename: string | null
     legacyVolume?: string
+    relativeFile?: string
+    location?: DownloadLocation
     state: MangaArchiveState
     task: SuwayomiTask | null
   }>
@@ -39,7 +43,7 @@ export interface MangaArchiveStatus {
 type MangaArchiveDownload = Omit<Awaited<ReturnType<SuwayomiClient['download']>>, 'queue'> & {
   queue?: SuwayomiTask[]
   filename: string | null
-  archived?: Array<{ chapterId: string; filename: string }>
+  archived?: Array<{ chapterId: string; filename: string; relativeFile?: string; location?: DownloadLocation }>
   bangumi?: { id: number; title: string }
 }
 

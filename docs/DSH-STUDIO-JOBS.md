@@ -32,3 +32,5 @@
 | `manga_tasks` 和 `manga_komga_status` | `GET /api/manga/downloads?mangaId=:id`、`GET /api/manga/:id/komga` | 分别查看下载队列、CBZ 文件及 Komga 后续处理状态 |
 
 如果提交时 Studio 连接中断，先从任务列表核对服务是否已经接单。托管模式遇到配置或连接错误时会返回明确的错误，DSH 等待 Studio 恢复后再处理。
+
+小说完成后从 `artifacts[].location` 或 `novel_library` 读取 EPUB 位置，通过 `downloadPath` 获取文件。漫画查询 `manga_komga_status` 的 `chapters[].location` 或任务历史的 `archive.location`。已核实的文件会返回 `relativePath` 和 Studio 容器内的 `storagePath`。部署配置提供绝对 NAS 目录时也会返回 `nasPath`。Agent 提交漫画任务后只需查进度和位置，每话由归档服务自动生成一个 CBZ。

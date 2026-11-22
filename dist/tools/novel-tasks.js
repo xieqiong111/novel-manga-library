@@ -13,8 +13,7 @@ export function registerNovelTasks(ctx, runtime) {
         name: 'novel_tasks',
         description: [
             'Manage background EPUB download tasks. Actions: list, get, cancel, retry, logs, status.',
-            'Use get/list to read progress: state, percent, phase, volumesDone/Total, chaptersDone/Total, currentVolume, currentChapter,',
-            'plus the actual downloadedChapters, downloadedVolumes and EPUB artifacts (path, sha256, bytes, integrity).',
+            'Use get/list to read progress. After completion use the EPUB artifacts and their verified location.nasPath when present. downloadPath is the Studio file endpoint. storagePath is a path inside Studio.',
             'cancel aborts a queued or running task cooperatively; retry re-queues a failed/cancelled/interrupted task.',
             'status returns plugin diagnostics (Dart core availability, enabled sources, dirs); logs returns recent structured log entries.',
         ].join(' '),
@@ -58,7 +57,8 @@ export function registerNovelTasks(ctx, runtime) {
                         return { ok: false, error: { code: 'TASK_ID_REQUIRED', message: '请提供 Studio 返回的 taskId。' } };
                     }
                     if (action === 'get')
-                        return ok({ executor: 'studio', task: await studioJob('/api/tasks/' + id) });
+                        return ok({ executor: 'studio', task: await studioJob('/api/tasks/' + id),
+                            nextStep: '已完成的 EPUB 保存位置见 artifacts[].location，获取文件使用 artifacts[].downloadPath。' });
                     if (id.startsWith('dsh:')) {
                         return { ok: false, error: { code: 'HISTORY_READ_ONLY', message: '已恢复的 DSH 旧任务仅支持查询。' } };
                     }

@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
+import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
 import { createApi } from '../../server/api.mjs'
 import { createMangaApi } from '../../server/manga-api.mjs'
 import { SuwayomiError } from '../../server/suwayomi-client.mjs'
@@ -36,6 +39,33 @@ function responseSink() {
 
 describe('Suwayomi BFF routes', () => {
   const logger = { warn: vi.fn(), error: vi.fn() }
+
+  it('returns NAS locations only for archives present under the configured storage root', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'studio-locations-'))
+    try {
+      await mkdir(path.join(root, '旧目录'), { recursive: true })
+      const relative = '旧目录/第001话 [101].cbz'
+      const copy = path.join(root, relative)
+      await writeFile(copy, '')
+      await symlink(copy, path.join(root, '旧目录', 'alias.cbz'))
+      const history = [relative, '旧目录/missing.cbz', '旧目录/alias.cbz'].map((file) => ({ archive: { file } }))
+      const client = { tasks: async () => ({ queue: [] }) }
+      const api = createApi({}, {
+        token: 'fixture-admin', mangaStorageRoot: root, mangaStorageLabel: '/mnt/manga',
+        archiveHistory: { page: async () => ({ history, nextBefore: null }) },
+      }, logger, client)
+      const route = '/api/manga/downloads'
+      const res = responseSink()
+      await api(request('GET', route, { token: 'fixture-admin' }), res, new URL(route, 'http://localhost'))
+      expect(res.status).toBe(200)
+      const [archived, missing, symlinked] = res.json().history.map((record) => record.archive)
+      expect(archived.location).toMatchObject({ relativePath: relative, nasPath: '/mnt/manga/' + relative })
+      expect(missing).not.toHaveProperty('location')
+      expect(symlinked).not.toHaveProperty('location')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
 
   it('requires the chapter exporter to confirm the Bangumi binding before a managed enqueue', async () => {
     const catalog = { archiveMode: 'chapter', chapters: [{ id: '101', downloaded: false, filename: null }] }

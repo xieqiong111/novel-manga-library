@@ -6,13 +6,15 @@
  * is no fixture/mock branch here: an empty result is an empty result.
  */
 import { createReadStream } from 'node:fs'
-import { readFile, stat } from 'node:fs/promises'
+import { lstat, readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { timingSafeEqual } from 'node:crypto'
 import { TaskManagerError } from '../dist/core/tasks.js'
+import { folderWithin } from '../dist/core/download-folders.js'
 import { createSuwayomiClient } from './suwayomi-client.mjs'
 import { createDownloadFoldersApi } from './download-folders-api.mjs'
 import { createMangaApi } from './manga-api.mjs'
+import { validArchiveFile } from './manga-volume-client.mjs'
 import { createKomgaClient } from './komga-client.mjs'
 import { isDshReadRoute } from './integrations.mjs'
 import { createKomgaApi } from './komga-api.mjs'
@@ -135,6 +137,14 @@ export function createApi(
     missingBffAuth: settings.mangaCredentialsConfigured && !settings.token && !settings.auth,
     archiveHistory: settings.archiveHistory,
     postDownload: settings.postDownload?.status,
+    async locateArchive(relativePath) {
+      if (!settings.mangaStorageRoot || !validArchiveFile(relativePath)) return null
+      try {
+        const directory = await folderWithin(settings.mangaStorageRoot, path.posix.dirname(relativePath))
+        const storagePath = path.join(directory, path.posix.basename(relativePath))
+        return await savedLocation(relativePath, storagePath, settings.mangaStorageLabel)
+      } catch { return null }
+    },
     async bindBangumi(mangaId, id, sourceTitle) {
       const manga = await mangaClient.getManga(mangaId)
       const subject = await resolveDownloadSubject(metadata, 'manga', [manga.title], id, sourceTitle)
@@ -142,6 +152,23 @@ export function createApi(
       return subject
     },
   })
+
+  async function savedLocation(relativePath, storagePath, label) {
+    if (!(await lstat(storagePath)).isFile()) return null
+    return { relativePath, storagePath, ...(label && path.posix.isAbsolute(label)
+      ? { nasPath: path.posix.join(label, relativePath) } : {}) }
+  }
+
+  async function libraryItem(entry) {
+    const item = toLibraryItem(entry)
+    try {
+      const storagePath = await runtime.library.filePath(entry)
+      const configured = entry.storageFolder !== undefined
+      const relativePath = configured ? path.posix.join(entry.storageFolder, entry.relativePath) : entry.relativePath
+      const location = await savedLocation(relativePath, storagePath, configured ? settings.novelStorageLabel : '')
+      return location ? { ...item, location } : item
+    } catch { return item }
+  }
   const savedFileHistory = createSavedFileHistory(settings, runtime, logger)
   const dshHistory = () => readDshTasks(settings.novelTaskHistoryDir).catch(() => {
     logger.warn('downloads', 'dsh_history_unavailable')
@@ -499,7 +526,7 @@ export function createApi(
         sendJson(res, 200, {
           ...toTask({ ...task, id: historical ? 'dsh:' + task.id : id }), ...(historical ? { origin: 'dsh' } : {}),
           progress: task.progress, downloadedChapters: task.downloadedChapters, downloadedVolumes: task.downloadedVolumes,
-          artifacts: entries.map(toLibraryItem),
+          artifacts: await Promise.all(entries.map(libraryItem)),
         })
         return true
       }
@@ -518,7 +545,7 @@ export function createApi(
       if (url.pathname === '/api/library' && method === 'GET') {
         await runtime.library.load()
         const entries = runtime.library.list({ query: url.searchParams.get('query') ?? '', limit: 200 })
-        sendJson(res, 200, entries.map(toLibraryItem))
+        sendJson(res, 200, await Promise.all(entries.map(libraryItem)))
         return true
       }
       if (url.pathname === '/api/library/stats' && method === 'GET') {
@@ -547,7 +574,7 @@ export function createApi(
       if (segments[1] === 'library' && segments.length === 3 && method === 'GET') {
         const entry = runtime.library.get(segments[2])
         if (!entry) throw new HttpError(404, 'FILE_NOT_FOUND', 'Unknown library entry')
-        sendJson(res, 200, toLibraryItem(entry))
+        sendJson(res, 200, await libraryItem(entry))
         return true
       }
       if (segments[1] === 'library' && segments.length === 4 && segments[3] === 'file' && ['GET', 'HEAD'].includes(method)) {

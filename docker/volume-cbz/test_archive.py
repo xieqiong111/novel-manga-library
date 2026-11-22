@@ -57,8 +57,11 @@ class ChapterArchiveTests(unittest.TestCase):
                 live, "chapter_zip", side_effect=client.chapter_zip
             ):
                 self.assertEqual(run_once(live, root), 0)
-                catalog = archive_catalog(live, root, 17)
+                catalog = archive_catalog(live, root, 17, storage_root=root)
             self.assertEqual(catalog["bangumiSubjectId"], 123)
+            self.assertEqual([row["relativeFile"] for row in catalog["chapters"]], [
+                "下载源别名/第001话 [3].cbz", "正式名称 ～副标题～/第002话 [4].cbz",
+            ])
             self.assertEqual(client.calls, [3, 4])
             self.assertTrue((root / "下载源别名" / "第001话 [3].cbz").is_file())
             with ZipFile(root / "正式名称 ～副标题～" / "第002话 [4].cbz") as archive:

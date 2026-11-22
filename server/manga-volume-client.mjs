@@ -130,6 +130,8 @@ function validChapter(chapter) {
       typeof chapter.name !== 'string' || typeof chapter.downloaded !== 'boolean' ||
       (chapter.number !== null && (typeof chapter.number !== 'string' || !/^\d{1,4}(?:\.\d{1,4})?$/.test(chapter.number))) ||
       (chapter.legacyVolume !== undefined && (typeof chapter.legacyVolume !== 'string' || !/^第\d{2,4}卷\.cbz$/.test(chapter.legacyVolume))) ||
+      (chapter.relativeFile !== undefined && (!validArchiveFile(chapter.relativeFile) ||
+        chapter.relativeFile.split('/').at(-1) !== (chapter.filename ?? chapter.legacyVolume))) ||
       (chapter.archiveFailed !== undefined && typeof chapter.archiveFailed !== 'boolean')) return false
   if (chapter.number === null) {
     return chapter.filename === null || chapter.filename === `章节 [${chapter.id}].cbz`

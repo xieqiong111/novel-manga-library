@@ -27,7 +27,7 @@ export function registerNovelLibrary(ctx: Context, runtime: PluginRuntime) {
     name: 'novel_library',
     description: [
       'Browse and verify the EPUB library produced by completed downloads. Actions: list, get, stats, verify, checksums, remove, status.',
-      'In managed mode, use the returned downloadPath against the Studio API. The file resides in Studio and removal requires an administrator session.',
+      'In managed mode location.nasPath is the reported NAS save path when configured, and downloadPath is the Studio API file endpoint. Removal requires an administrator session.',
       'verify re-checks ZIP/EPUB structure and sha256 sidecars for one entry (id) or the whole library; remove deletes one entry only when confirm=true.',
       'checksums returns the sha256 sidecar lines for external verification; stats aggregates counts, bytes, chapters and integrity.',
     ].join(' '),

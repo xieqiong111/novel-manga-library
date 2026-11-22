@@ -120,6 +120,7 @@ describe('native manga tools', () => {
     expect(komga.status).toHaveBeenCalledWith('22')
     const schema = ctx.tools.schemas().find((entry) => entry.name === 'manga_komga_download')
     expect(schema?.description).toContain('automatically packages each completed chapter')
+    expect(schema?.description).toContain('Do not call Docker')
     expect(JSON.stringify(schema)).not.toContain('"volume":')
   })
 
@@ -137,6 +138,7 @@ describe('native manga tools', () => {
     expect(komga.status).toHaveBeenLastCalledWith('22', undefined, { chapterIds: ['41', '42'], offset: undefined, limit: undefined })
     const archived = await call('manga_komga_download', { mangaId: '22', chapterIds: ['41'] })
     expect(archived).toMatchObject({ ok: true, summary: expect.stringContaining('确认 CBZ 1 个'),
+      archivePolicy: { mode: 'automatic-per-chapter', agentAction: 'poll-only' },
       next: { tool: 'manga_komga_status', args: { mangaId: '22', chapterIds: ['41'] } } })
     expect(komga.downloadChapters).toHaveBeenCalledExactlyOnceWith('22', ['41'])
     expect(await call('manga_komga_download', { mangaId: '22', chapterIds: [] })).toMatchObject({

@@ -465,13 +465,14 @@ def legacy_volume_chapters(directories):
                 if isinstance(saved, dict) and saved.get("version") == 1 and isinstance(saved.get("chapters"), list):
                     for row in saved["chapters"]:
                         if isinstance(row, list) and len(row) == 2 and all(type(value) is int for value in row):
-                            coverage.setdefault(tuple(row), file.name)
+                            coverage.setdefault(tuple(row), file)
             except (BadZipFile, OSError, ValueError, UnicodeError):
                 continue
     return coverage
 
 
-def archive_catalog(client, root, manga_id, previous=(), *, offset=0, limit=20, chapter_ids=None, archive_errors=None):
+def archive_catalog(client, root, manga_id, previous=(), *, offset=0, limit=20, chapter_ids=None, archive_errors=None,
+                    storage_root=None):
     manga = client.manga(manga_id)
     if not manga or str(manga["sourceId"]) == "0":
         return {"volumes": [], "archiveMode": "unsupported", "chapters": [], "chapterCount": 0}
@@ -491,8 +492,11 @@ def archive_catalog(client, root, manga_id, previous=(), *, offset=0, limit=20, 
         filename = chapter_filename(number, row["id"])
         status = archive_status(directories, filename, [row], archive_errors and (manga_id, filename) in archive_errors)
         old_file = legacy.get((row["id"], row["pageCount"]))
+        saved = archive_path(directories, filename) if status["filename"] else old_file
         if not status["filename"] and old_file:
-            status = {"filename": None, "legacyVolume": old_file}
+            status = {"filename": None, "legacyVolume": old_file.name}
+        if saved is not None and storage_root is not None:
+            status["relativeFile"] = saved.relative_to(storage_root).as_posix()
         results.append({
             "id": str(row["id"]), "name": row["name"], "number": number, "downloaded": row["isDownloaded"],
             **status,
@@ -560,7 +564,8 @@ def start_status_server(client, root, port, settings=None, archive_errors=None, 
                         self.send_error(400)
                         return
                     current, previous = storage_roots(root, settings)
-                    result = archive_catalog(client, current, int(match[1]), previous, archive_errors=archive_errors, **selection)
+                    result = archive_catalog(client, current, int(match[1]), previous,
+                                             archive_errors=archive_errors, storage_root=root, **selection)
                 else:
                     self.send_error(404)
                     return
@@ -653,15 +658,14 @@ def run_once(client, root, previous=(), archive_errors=None, history=None):
                 eligible = {row["id"] for _, row in standalone_chapters(completed)}
                 for row in completed:
                     if row["id"] not in eligible:
-                        filename = legacy.get((row["id"], row["pageCount"]))
-                        history.remember(manga, row, "legacy" if filename else "unsupported",
-                                         archive_path(directories, filename) if filename else None)
+                        saved = legacy.get((row["id"], row["pageCount"]))
+                        history.remember(manga, row, "legacy" if saved else "unsupported", saved)
             for filename, title, number, selected in chapter_archives(chapters):
                 row = selected[0]
                 old_file = legacy.get((row["id"], row["pageCount"]))
                 if old_file:
                     if history:
-                        history.remember(manga, row, "legacy", archive_path(directories, old_file))
+                        history.remember(manga, row, "legacy", old_file)
                     continue
                 key = (manga_id, filename)
                 try:
