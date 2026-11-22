@@ -36,6 +36,67 @@ def old_volume(client, root, manga, volume, chapters, previous=()):
 
 
 class ChapterArchiveTests(unittest.TestCase):
+    def test_complete_volume_uses_catalog_order_and_actual_zero_based_bookmarks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            settings = root / "config" / "download-folders.json"
+            catalogs = settings.parent / "manga-volume-catalogs"
+            catalogs.mkdir(parents=True)
+            settings.write_text(json.dumps({"mangaArchive": {"enabled": True}}))
+            manga = {"id": 17, "sourceId": "99", "title": "正式名称", "realUrl": "https://example.org/manga/17",
+                     "bangumi": {"subjectId": 123, "title": "正式名称"}}
+            (catalogs / "17.json").write_text(json.dumps({
+                "workUrl": manga["realUrl"], "mangaId": "17", "sourceId": "99", "subjectId": 123,
+                "volumes": [{"number": 1, "chapters": ["2", "1"], "source": "publisher", "confirmed": True},
+                            {"number": 2, "chapters": ["3", "4"], "source": "publisher", "confirmed": True}],
+                "volumeMetadata": [{"number": 1, "subjectId": 124}],
+            }))
+            rows = [chapter(3, "第1话·开端", page_count=1), chapter(4, "第2话·番外 & 序", False, page_count=2),
+                    chapter(5, "第3话"), chapter(6, "第4话", False)]
+            client = FakeSuwayomi()
+            client.manga = lambda _: manga
+            client.downloaded_mangas = lambda: {17: manga}
+            client.manga_chapters = lambda _: rows
+
+            def download(chapter_id, output):
+                client.calls.append(chapter_id)
+                row = next(row for row in rows if row["id"] == chapter_id)
+                with ZipFile(output, "w") as source:
+                    for page in reversed(range(row["pageCount"])):
+                        source.writestr(f"{page}.jpg", bytes([chapter_id, page]))
+                output.seek(0)
+
+            client.chapter_zip = download
+            history = DownloadHistory(root)
+            first = root / "正式名称" / "第01卷"
+            volume = first / "第01卷.cbz"
+            self.assertEqual(run_once(client, root, history=history, settings=settings), 0)
+            self.assertTrue((first / "第001话 [3].cbz").is_file())
+            self.assertFalse(volume.exists())
+            rows[1]["isDownloaded"] = True
+            for _ in range(2):
+                self.assertEqual(run_once(client, root, history=history, settings=settings), 0)
+            self.assertEqual(client.calls, [3, 5, 4])
+            self.assertEqual(list(first.glob("*.cbz")), [volume])
+            self.assertTrue((first / ".studio-chapters" / "第001话 [3].cbz").is_file())
+            self.assertTrue((first.parent / "第02卷" / "第003话 [5].cbz").is_file())
+            with ZipFile(volume) as archive:
+                self.assertIsNone(archive.testzip())
+                info = ElementTree.fromstring(archive.read("ComicInfo.xml"))
+                self.assertEqual(info.findtext("Web"), "https://bgm.tv/subject/124")
+                self.assertEqual(info.findtext("PageCount"), "3")
+                self.assertEqual([(mark.attrib, archive.read(f"{int(mark.get('Image')) + 1:06}.jpg"))
+                                  for mark in info.findall("./Pages/Page")], [
+                    ({"Image": "0", "Bookmark": "第2话·番外 & 序"}, bytes([4, 0])),
+                    ({"Image": "2", "Bookmark": "第1话·开端"}, bytes([3, 0])),
+                ])
+            catalog = archive_catalog(client, root, 17, storage_root=root, settings=settings)
+            relative = volume.relative_to(root).as_posix()
+            self.assertEqual([(row["relativeFile"], row["packedVolume"]) for row in catalog["chapters"][:2]],
+                             [(relative, True), (relative, True)])
+            self.assertEqual([event["file"] for event in history.events(0)["events"]].count(relative), 1)
+            self.assertEqual([entry["file"] for entry in history.page(None, 20, None)["history"]].count(relative), 2)
+
     def test_bangumi_binding_names_only_new_chapters_and_protects_other_editions(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

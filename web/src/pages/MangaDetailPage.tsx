@@ -270,7 +270,7 @@ function MangaDetail({ id }: { id: string }) {
                     : archive.data?.archiveMode === 'unsupported' ? '这个来源没有可单独归档的章节，请选择有分话目录的来源。'
                     : archive.data?.archiveMode === 'volume' ? '归档服务尚未启用按章模式。'
                     : archive.data?.available === false ? '未配置 Docker 归档，可下载到 Suwayomi。'
-                    : '每章下载完成后，Docker 自动生成一个 CBZ 并写入作品文件夹。'}
+                    : '下载后自动保存单话 CBZ。启用分卷归档时，凑齐已核验目录的章节会合为一卷。'}
                 </p>
                 <Button size="sm" disabled={!visibleChapters.length || archive.loading} onClick={() => setArchiveRevision((current) => current + 1)}
                   icon={<RefreshCw className="h-3.5 w-3.5" />}>刷新归档状态</Button>
@@ -338,7 +338,7 @@ function MangaDetail({ id }: { id: string }) {
 }
 
 function ChapterArchiveBadge({ archive }: { archive?: KomgaChapter }) {
-  if (archive?.state === 'archived') return <Badge tone="green" className="max-w-full"><span className="truncate">CBZ · {archive.filename}</span></Badge>
+  if (archive?.state === 'archived') return <Badge tone="green" className="max-w-full"><span className="truncate">{archive.packedVolume ? '已合卷' : 'CBZ'} · {archive.filename}</span></Badge>
   if (archive?.state === 'in_legacy_volume') return <Badge tone="gray">已在旧卷包 · {archive.legacyVolume}</Badge>
   if (archive?.state === 'waiting_archive') return <Badge tone="amber">等待打包</Badge>
   if (archive?.state === 'archive_failed') return <Badge tone="rose">打包失败</Badge>

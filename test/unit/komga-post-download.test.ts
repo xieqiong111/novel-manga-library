@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
+import { link, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -83,14 +83,28 @@ describe('after a manga CBZ is saved', () => {
     } finally { await f.cleanup() }
   })
 
-  it('links the chapter into one series and scrapes its volume cover with exact 64-bit source IDs', async () => {
+  it.each([false, true])('links one Komga series and scrapes the correct cover (complete volume: %s)', async (complete) => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'studio-follow-up-volume-'))
     try {
       const folder = '作品/第01卷'
       const file = folder + '/第001话 [21].cbz'
+      const originalAlias = path.join(root, '作品', '第01卷 - 第001话 [21].cbz')
+      const manualAlias = path.join(root, '作品', '第01卷 - 第002话 [22].cbz')
+      const indexedPath = complete ? path.join(root, '作品', '第01卷 - 第01卷.cbz') : originalAlias
       const downloadFoldersFile = path.join(root, 'folders.json')
       await mkdir(path.join(root, folder), { recursive: true })
-      await writeFile(path.join(root, file), 'chapter')
+      if (complete) {
+        const backup = path.join(root, folder, '.studio-chapters')
+        await mkdir(backup)
+        const first = path.join(backup, '第001话 [21].cbz')
+        await writeFile(first, 'chapter')
+        await writeFile(path.join(backup, '第002话 [22].cbz'), 'other chapter')
+        await link(first, originalAlias)
+        await writeFile(manualAlias, 'manual')
+        await writeFile(path.join(root, folder, '第01卷.cbz'), 'complete')
+      } else {
+        await writeFile(path.join(root, file), 'chapter')
+      }
       await writeFile(path.join(root, '作品', '.studio-series.json'), '{"sourceId":774030471139699415,"mangaId":22}')
       await mkdir(path.join(root, 'bangumi-manga'))
       await writeFile(path.join(root, 'bangumi-manga', '22.json'), JSON.stringify({
@@ -106,7 +120,7 @@ describe('after a manga CBZ is saved', () => {
       const client = {
         libraries: async () => ({ libraries: [{ id: 'library', root }] }),
         series: async () => ({ content: [{ id: 'work', path: root + '/作品' }], page: { number: 0, last: true } }),
-        metadataBooks: async () => ({ books: [{ id: 'book', path: root + '/作品/第01卷 - 第001话 [21].cbz' }], last: true, page: 0 }),
+        metadataBooks: async () => ({ books: [{ id: 'book', path: indexedPath }], last: true, page: 0 }),
         excludeVolumeFolder: vi.fn(async () => {}),
       }
       const mangaVolumes = {
@@ -119,6 +133,11 @@ describe('after a manga CBZ is saved', () => {
       }, expect.any(Function), undefined)
       expect(client.excludeVolumeFolder).toHaveBeenCalledWith('library', root + '/作品/第01卷')
       expect(worker.status(file)).toMatchObject({ phase: 'done', message: expect.stringContaining('已核对作品下的卷元数据') })
+      expect(await readFile(indexedPath, 'utf8')).toBe(complete ? 'complete' : 'chapter')
+      if (complete) {
+        await expect(readFile(originalAlias)).rejects.toMatchObject({ code: 'ENOENT' })
+        expect(await readFile(manualAlias, 'utf8')).toBe('manual')
+      }
     } finally { await rm(root, { recursive: true, force: true }) }
   })
 

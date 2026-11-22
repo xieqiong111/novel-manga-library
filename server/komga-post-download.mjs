@@ -1,4 +1,4 @@
-import { link, lstat, readFile, readdir } from 'node:fs/promises'
+import { link, lstat, readFile, readdir, unlink } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { folderWithin } from '../dist/core/download-folders.js'
@@ -36,6 +36,23 @@ async function isVolumeFolder(folder, mangaId, sourceId) {
 }
 
 const archivedChapter = /^(?:第[0-9]{3,4}(?:\.[0-9]{1,4})?话|章节) \[\d+\]\.cbz$|^第[0-9]{2,4}卷\.cbz$/u
+const chapterAlias = /^(?:第[0-9]{2,4}卷|未分卷) - (.+)$/u
+
+async function retireChapterAliases(folder, work) {
+  const backup = path.join(folder, '.studio-chapters')
+  const stat = await lstat(backup).catch((error) => { if (error.code !== 'ENOENT') throw error })
+  if (!stat?.isDirectory()) return new Set()
+  const saved = new Map((await readdir(backup, { withFileTypes: true }))
+    .filter((entry) => entry.isFile() && archivedChapter.test(entry.name)).map((entry) => [entry.name, path.join(backup, entry.name)]))
+  for (const entry of await readdir(work, { withFileTypes: true })) {
+    const original = entry.isFile() && saved.get(chapterAlias.exec(entry.name)?.[1])
+    if (!original) continue
+    const target = path.join(work, entry.name)
+    const [alias, source] = await Promise.all([lstat(target, { bigint: true }), lstat(original, { bigint: true })])
+    if (source.isFile() && alias.isFile() && alias.ino === source.ino && alias.dev === source.dev) await unlink(target)
+  }
+  return new Set(saved.keys())
+}
 
 async function projectVolumeFolder(folder, relativeFolder, requestedFile, previousCover) {
   const work = path.dirname(folder)
@@ -43,9 +60,8 @@ async function projectVolumeFolder(folder, relativeFolder, requestedFile, previo
   const files = (await readdir(folder, { withFileTypes: true }))
     .filter((entry) => entry.isFile() && archivedChapter.test(entry.name))
     .map((entry) => entry.name).sort((a, b) => a.localeCompare(b, 'zh-CN', { numeric: true }))
-  if (!files.includes(requestedFile)) {
-    throw new MetadataError(409, 'ARCHIVE_NOT_FOUND', '分卷归档中未找到待收录的 CBZ。')
-  }
+  const volumeFile = path.basename(folder) + '.cbz'
+  const complete = files.includes(volumeFile)
   for (const name of files) {
     const source = path.join(folder, name)
     const target = path.join(work, prefix + name)
@@ -57,9 +73,14 @@ async function projectVolumeFolder(folder, relativeFolder, requestedFile, previo
       }
     }
   }
-  const coverFile = files.includes(previousCover) ? previousCover : files[0]
+  const retired = complete ? await retireChapterAliases(folder, work) : new Set()
+  const indexedFile = retired.has(requestedFile) ? volumeFile : requestedFile
+  if (!files.includes(indexedFile)) {
+    throw new MetadataError(409, 'ARCHIVE_NOT_FOUND', '分卷归档中未找到待收录的 CBZ。')
+  }
+  const coverFile = complete ? volumeFile : files.includes(previousCover) ? previousCover : files[0]
   const seriesFolder = path.posix.dirname(relativeFolder)
-  return { seriesFolder, file: path.posix.join(seriesFolder, prefix + requestedFile),
+  return { seriesFolder, file: path.posix.join(seriesFolder, prefix + indexedFile),
     coverFile, coverPath: path.posix.join(seriesFolder, prefix + coverFile) }
 }
 
@@ -148,13 +169,13 @@ export async function openKomgaPostDownload({ settings, archiveHistory, logger, 
         }
         if (!validArchiveFile(job.file)) throw new MetadataError(409, 'ARCHIVE_PATH_INVALID', 'CBZ 路径无效。')
         const folder = await folderWithin(settings.mangaStorageRoot, job.folder)
-        if (!(await lstat(path.join(folder, path.posix.basename(job.file)))).isFile()) {
-          throw new MetadataError(409, 'ARCHIVE_NOT_FOUND', '原下载位置的 CBZ 不可读取。')
-        }
         const binding = await readMangaBangumiBinding(settings.config.downloadFoldersFile, job.mangaId)
         const leaf = path.posix.basename(job.folder)
         const numbered = /^第([0-9]{2,4})卷$/.exec(leaf)
         const nested = (numbered || leaf === '未分卷') && await isVolumeFolder(folder, job.mangaId, binding?.sourceId)
+        if (!nested && !(await lstat(path.join(folder, path.posix.basename(job.file)))).isFile()) {
+          throw new MetadataError(409, 'ARCHIVE_NOT_FOUND', '原下载位置的 CBZ 不可读取。')
+        }
         const volume = binding && nested && numbered
         const archivedFolder = path.posix.join(libraryMount, job.folder)
         libraries ??= (await client.libraries({ includePaths: true })).libraries

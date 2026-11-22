@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Export one CBZ per completed Suwayomi manga chapter."""
+"""Export completed Suwayomi chapters and assemble verified volumes."""
 
 import argparse
 from collections import Counter
@@ -42,6 +42,7 @@ BARE_CHAPTER = re.compile(r"^(?P<number>[0-9]{1,4}(?:\.[0-9]{1,4})?)(?=$|[\s话�
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif", ".bmp", ".jxl"}
 DIGITS = str.maketrans("０１２３４５６７８９", "0123456789")
 SERIES_MARKER = ".studio-series.json"
+PACKED_CHAPTERS = ".studio-chapters"
 PAGE_SIZE = 100
 CATALOG_LIMIT = 5000
 CHAPTER_FIELDS = "id name isDownloaded pageCount"
@@ -108,6 +109,23 @@ class DownloadHistory:
             """, (before, before, manga_id, manga_id, limit+1)).fetchall()
         return {"history": [dict(row) for row in rows[:limit]],
                 "nextBefore": rows[limit-1]["seq"] if len(rows) > limit else None}
+
+    def remember_volume(self, manga, chapters, file):
+        relative = file.relative_to(self.root).as_posix()
+        manga_id = str(manga["id"])
+        with closing(self.connect()) as db, db:
+            db.executemany("""
+                INSERT INTO completed(chapterId,mangaId,title,chapterName,observedAt,archiveState,file)
+                VALUES(?,?,?,?,?,'archived',?) ON CONFLICT(chapterId) DO UPDATE SET
+                    title=excluded.title, chapterName=excluded.chapterName, archiveState='archived', file=excluded.file
+                WHERE completed.title != excluded.title OR completed.chapterName != excluded.chapterName
+                    OR completed.archiveState != 'archived' OR completed.file IS NOT excluded.file
+            """, [(str(chapter["id"]), manga_id, manga["title"], chapter["name"], int(time.time()*1000), relative)
+                  for chapter in chapters])
+            db.execute("""
+                INSERT INTO exports(mangaId,file) SELECT ?,? WHERE NOT EXISTS
+                    (SELECT 1 FROM exports WHERE mangaId=? AND file=?)
+            """, (manga_id, relative, manga_id, relative))
 
     def events(self, after):
         with closing(self.connect()) as db:
@@ -359,7 +377,7 @@ def prepare_series_folder(folder, manga):
             raise ArchiveError("existing folder belongs to a different series")
 
 
-def comic_info(manga, title, number, page_count, volume=None):
+def comic_info(manga, title, number, page_count, volume=None, bookmarks=()):
     info = ElementTree.Element("ComicInfo")
     for tag, value in [("Series", manga.get("bangumi", {}).get("title", manga["title"])), ("Title", title),
                        ("Number", number), ("PageCount", str(page_count))]:
@@ -370,6 +388,10 @@ def comic_info(manga, title, number, page_count, volume=None):
         subject_id = volume.get("subjectId") if volume else None
         subject_id = subject_id or manga["bangumi"]["subjectId"]
         ElementTree.SubElement(info, "Web").text = f"https://bgm.tv/subject/{subject_id}"
+    if bookmarks:
+        pages = ElementTree.SubElement(info, "Pages")
+        for index, label in bookmarks:
+            ElementTree.SubElement(pages, "Page", Image=str(index), Bookmark=label)
     return ElementTree.tostring(info, encoding="utf-8", xml_declaration=True)
 
 
@@ -377,25 +399,31 @@ def add_chapter_pages(client, archive, chapter, first_page):
     with tempfile.TemporaryFile() as downloaded:
         client.chapter_zip(chapter["id"], downloaded)
         with ZipFile(downloaded) as source:
-            pages = [item for item in source.infolist() if not item.is_dir()
-                     and not any(part.startswith((".", "__MACOSX")) for part in PurePosixPath(item.filename).parts)
-                     and PurePosixPath(item.filename).suffix.lower() in IMAGE_SUFFIXES]
-            pages.sort(key=lambda item: natural_key(item.filename))
-            expected = chapter["pageCount"]
-            if not pages or (expected > 0 and len(pages) != expected):
-                raise ArchiveError(f"chapter {chapter['id']} has {len(pages)} archive pages; expected {expected}")
-            if sum(item.file_size for item in pages) > ARCHIVE_LIMIT or any(item.file_size <= 0 for item in pages):
-                raise ArchiveError(f"chapter {chapter['id']} contains invalid image sizes")
-            for index, item in enumerate(pages, first_page):
-                suffix = PurePosixPath(item.filename).suffix.lower()
-                with source.open(item) as image, archive.open(f"{index:06}{suffix}", "w") as output:
-                    shutil.copyfileobj(image, output, 1024**2)
+            return copy_chapter_pages(source, archive, chapter, first_page)
+
+
+def copy_chapter_pages(source, archive, chapter, first_page):
+    pages = [item for item in source.infolist() if not item.is_dir()
+             and not any(part.startswith((".", "__MACOSX")) for part in PurePosixPath(item.filename).parts)
+             and PurePosixPath(item.filename).suffix.lower() in IMAGE_SUFFIXES]
+    pages.sort(key=lambda item: natural_key(item.filename))
+    expected = chapter["pageCount"]
+    if not pages or (expected > 0 and len(pages) != expected):
+        raise ArchiveError(f"chapter {chapter['id']} has {len(pages)} archive pages; expected {expected}")
+    if sum(item.file_size for item in pages) > ARCHIVE_LIMIT or any(item.file_size <= 0 for item in pages):
+        raise ArchiveError(f"chapter {chapter['id']} contains invalid image sizes")
+    for index, item in enumerate(pages, first_page):
+        suffix = PurePosixPath(item.filename).suffix.lower()
+        with source.open(item) as image, archive.open(f"{index:06}{suffix}", "w") as output:
+            shutil.copyfileobj(image, output, 1024**2)
     return len(pages)
 
 
-def archive_signature(chapters):
-    return json.dumps({"version": 1, "chapters": [[row["id"], row["pageCount"]] for row in chapters]},
-                      separators=(",", ":")).encode()
+def archive_signature(chapters, *, packed=False):
+    fields = {"version": 1, "chapters": [[row["id"], row["pageCount"]] for row in chapters]}
+    if packed:
+        fields["kind"] = "complete-volume"
+    return json.dumps(fields, separators=(",", ":")).encode()
 
 
 def storage_roots(root, settings):
@@ -478,12 +506,16 @@ def volume_assignments(settings, manga, chapters, preferences):
         return {}
     editions = {row["number"]: row.get("subjectId") for row in record.get("volumeMetadata", [])}
     mapped = {}
+    volume_counts = Counter(row.get("number") for row in record.get("volumes", []) if type(row.get("number")) is int)
     for row in record.get("volumes", []):
         number = row.get("number")
+        numbers = row.get("chapters", [])
         if (type(number) is int and 1 <= number <= 9999 and row.get("confirmed") is True
-                and row.get("source") in sources):
-            for chapter in row.get("chapters", []):
-                mapped[chapter] = {"number": number, "subjectId": editions.get(number)} if chapter not in mapped else None
+                and row.get("source") in sources and volume_counts[number] == 1 and isinstance(numbers, list)
+                and all(isinstance(value, str) and re.fullmatch(r"\d{1,4}(?:\.\d{1,4})?", value) for value in numbers)):
+            volume = {"number": number, "subjectId": editions.get(number), "chapters": numbers}
+            for chapter in numbers:
+                mapped[chapter] = volume if chapter not in mapped else None
     standalone = list(standalone_chapters(chapters))
     counts = Counter(number for number, _ in standalone)
     assignments = {}
@@ -534,20 +566,22 @@ def chapter_destination(directories, filename, folder, existing):
     return parent / filename
 
 
-def archive_status(destination, filename, selected, failed):
+def archive_status(destination, filename, selected, failed, *, packed=False):
     if destination.is_file() and not destination.is_symlink():
         try:
             with ZipFile(destination) as archive:
-                if archive.comment == archive_signature(selected):
+                if archive.comment == archive_signature(selected, packed=packed):
                     return {"filename": filename}
         except BadZipFile:
             return {"filename": None, "archiveFailed": True}
     return {"filename": None, **({"archiveFailed": True} if failed else {})}
 
 
-def legacy_volume_chapters(directories):
-    coverage = {}
+def volume_coverage(directories):
+    legacy, packed = {}, {}
     for folder in directories:
+        if folder.is_symlink():
+            continue
         nested = sorted(child for child in folder.glob("第*卷")
                         if re.fullmatch(r"第[0-9]{2,4}卷", child.name) and not child.is_symlink() and child.is_dir())
         for file in sorted(path for parent in [folder, *nested] for path in parent.glob("第*卷.cbz")):
@@ -557,12 +591,13 @@ def legacy_volume_chapters(directories):
                 with ZipFile(file) as archive:
                     saved = json.loads(archive.comment)
                 if isinstance(saved, dict) and saved.get("version") == 1 and isinstance(saved.get("chapters"), list):
+                    coverage = packed if saved.get("kind") == "complete-volume" else legacy
                     for row in saved["chapters"]:
                         if isinstance(row, list) and len(row) == 2 and all(type(value) is int for value in row):
                             coverage.setdefault(tuple(row), file)
             except (BadZipFile, OSError, ValueError, UnicodeError):
                 continue
-    return coverage
+    return legacy, packed
 
 
 def archive_catalog(client, root, manga_id, previous=(), *, offset=0, limit=20, chapter_ids=None, archive_errors=None,
@@ -576,7 +611,7 @@ def archive_catalog(client, root, manga_id, previous=(), *, offset=0, limit=20, 
     if len(chapters) > CATALOG_LIMIT:
         raise ArchiveError("chapter catalog exceeds lookup limit")
     directories = archive_directories(root, previous, manga)
-    legacy = legacy_volume_chapters(directories)
+    legacy, packed = volume_coverage(directories)
     standalone = list(standalone_chapters(chapters))
     preferences = volume_preferences(settings)
     assignments = volume_assignments(settings, manga, chapters, preferences)
@@ -591,10 +626,14 @@ def archive_catalog(client, root, manga_id, previous=(), *, offset=0, limit=20, 
         section = volume_folder(volume["number"] if volume else None) if preferences[0] else None
         destination = chapter_destination(directories, filename, section, existing)
         status = archive_status(destination, filename, [row], archive_errors and (manga_id, filename) in archive_errors)
-        old_file = legacy.get((row["id"], row["pageCount"]))
+        key = (row["id"], row["pageCount"])
+        old_file = legacy.get(key)
         saved = destination if status["filename"] else old_file
         if not status["filename"] and old_file:
             status = {"filename": None, "legacyVolume": old_file.name}
+        if key in packed:
+            saved = packed[key]
+            status = {"filename": saved.name, "packedVolume": True}
         if saved is not None and storage_root is not None:
             status["relativeFile"] = saved.relative_to(storage_root).as_posix()
         results.append({
@@ -690,10 +729,11 @@ def start_status_server(client, root, port, settings=None, archive_errors=None, 
     return server
 
 
-def write_cbz(client, root, manga, filename, title, number, chapters, directories, *, destination=None, volume=None):
+def write_cbz(client, root, manga, filename, title, number, chapters, directories, *, destination=None, volume=None,
+              chapter_files=None):
     destination = destination or archive_path(directories, filename)
     folder = destination.parent
-    signature = archive_signature(chapters)
+    signature = archive_signature(chapters, packed=chapter_files is not None)
     if len(signature) > 65535:
         raise ArchiveError("too many chapters for one volume archive")
     if destination.is_symlink():
@@ -702,6 +742,8 @@ def write_cbz(client, root, manga, filename, title, number, chapters, directorie
         with ZipFile(destination) as current:
             if current.comment == signature:
                 return False
+            if chapter_files is not None:
+                raise ArchiveError("preserving the existing volume CBZ")
             try:
                 previous = json.loads(current.comment)
             except (UnicodeError, ValueError):
@@ -716,9 +758,18 @@ def write_cbz(client, root, manga, filename, title, number, chapters, directorie
         try:
             with ZipFile(temporary, "w") as output:
                 page_count = 0
-                for chapter in chapters:
-                    page_count += add_chapter_pages(client, output, chapter, page_count + 1)
-                output.writestr("ComicInfo.xml", comic_info(manga, title, number, page_count, volume))
+                bookmarks = []
+                for index, chapter in enumerate(chapters):
+                    if chapter_files is not None or len(chapters) > 1:
+                        bookmarks.append((page_count, chapter["name"]))
+                    if chapter_files is None:
+                        page_count += add_chapter_pages(client, output, chapter, page_count + 1)
+                    else:
+                        with ZipFile(chapter_files[index]) as source:
+                            if source.comment != archive_signature([chapter]):
+                                raise ArchiveError("chapter CBZ does not match the confirmed chapter")
+                            page_count += copy_chapter_pages(source, output, chapter, page_count + 1)
+                output.writestr("ComicInfo.xml", comic_info(manga, title, number, page_count, volume, bookmarks))
                 output.comment = signature
             temporary.flush()
             os.fsync(temporary.fileno())
@@ -735,11 +786,70 @@ def write_cbz(client, root, manga, filename, title, number, chapters, directorie
                 if series is None or series.is_symlink() or folder.is_symlink():
                     raise ArchiveError("invalid previous manga destination")
                 prepare_series_folder(series, manga)
-            os.replace(staging, destination)
+            if chapter_files is None:
+                os.replace(staging, destination)
+            else:
+                os.link(staging, destination)
         finally:
             staging.unlink(missing_ok=True)
     logging.info("exported %s in %s (%d pages)", destination.name, folder.name, page_count)
     return True
+
+
+def pack_complete_volumes(client, root, manga, chapters, directories, assignments, existing, history):
+    series = directories[0]
+    groups = {}
+    for number, chapter in standalone_chapters(chapters):
+        volume = assignments.get(chapter["id"])
+        if volume:
+            _, members = groups.setdefault(volume["number"], (volume, {}))
+            members[number] = chapter
+
+    exported, failures = 0, 0
+    for volume, members in groups.values():
+        numbers = volume["chapters"]
+        if len(members) != len(numbers):
+            continue
+        selected = [members[number] for number in numbers]
+        names = [chapter_filename(number, chapter["id"]) for number, chapter in zip(numbers, selected)]
+        title = volume_folder(volume["number"])
+        folder = series / title
+        destination = folder / f"{title}.cbz"
+        backup = folder / PACKED_CHAPTERS
+        try:
+            if folder.is_symlink() or backup.is_symlink() or destination.is_symlink():
+                raise ArchiveError("unsafe volume destination")
+            if (series / destination.name).exists():
+                continue
+            # Leave a previously exported volume in place if the catalog or source edition changes.
+            if destination.exists() and not archive_status(
+                    destination, destination.name, selected, False, packed=True)["filename"]:
+                continue
+            originals = [existing.get(name) for name in names]
+            chapter_files = [source or backup / name for name, source in zip(names, originals)]
+            if any(source.is_symlink() or not source.is_file() or
+                   (source.parent not in (series, backup) and source.parent.parent != series)
+                   for source in chapter_files):
+                continue
+            exported += write_cbz(client, root, manga, destination.name, title, str(volume["number"]), selected, directories,
+                                  destination=destination, volume=volume, chapter_files=chapter_files)
+            backup.mkdir(mode=0o700, exist_ok=True)
+            for source, name, chapter in zip(originals, names, selected):
+                if source is None or not archive_status(source, name, [chapter], False)["filename"]:
+                    continue
+                saved = backup / name
+                try:
+                    os.link(source, saved)
+                except FileExistsError:
+                    if saved.is_symlink() or not saved.samefile(source):
+                        raise ArchiveError("preserving a conflicting backed-up chapter") from None
+                source.unlink()
+            if history:
+                history.remember_volume(manga, selected, destination)
+        except (ArchiveError, OSError, BadZipFile, RuntimeError) as exc:
+            failures += 1
+            logging.error("manga %s volume %s: %s", manga["id"], volume["number"], exc)
+    return exported, failures
 
 
 def run_once(client, root, previous=(), archive_errors=None, history=None, settings=None):
@@ -765,7 +875,7 @@ def run_once(client, root, previous=(), archive_errors=None, history=None, setti
             if isinstance(client, Suwayomi):
                 manga = client.archive_identity(manga)
             directories = archive_directories(root, previous, manga)
-            legacy = legacy_volume_chapters(directories)
+            legacy, packed = volume_coverage(directories)
             assignments = volume_assignments(settings, manga, chapters, preferences)
             existing = chapter_locations(directories)
             if history:
@@ -776,7 +886,10 @@ def run_once(client, root, previous=(), archive_errors=None, history=None, setti
                         history.remember(manga, row, "legacy" if saved else "unsupported", saved)
             for filename, title, number, selected in chapter_archives(chapters):
                 row = selected[0]
-                old_file = legacy.get((row["id"], row["pageCount"]))
+                key = (row["id"], row["pageCount"])
+                if key in packed:
+                    continue
+                old_file = legacy.get(key)
                 if old_file:
                     if history:
                         history.remember(manga, row, "legacy", old_file)
@@ -791,6 +904,7 @@ def run_once(client, root, previous=(), archive_errors=None, history=None, setti
                     written = write_cbz(client, root, manga, filename, title, number or '', selected, directories,
                                         destination=destination, volume=volume)
                     exported += written
+                    existing[filename] = destination
                     if history:
                         history.remember(manga, row, "archived", destination, written)
                     clear_error(key)
@@ -800,6 +914,10 @@ def run_once(client, root, previous=(), archive_errors=None, history=None, setti
                         history.remember(manga, row, "archive_failed")
                     failures += 1
                     logging.error("manga %s chapter %s: %s", manga_id, selected[0]["id"], exc)
+            written, pack_failures = pack_complete_volumes(client, root, manga, chapters, directories, assignments,
+                                                           existing, history)
+            exported += written
+            failures += pack_failures
         except (ArchiveError, KeyError, TypeError, ValueError) as exc:
             if history:
                 for row in completed:

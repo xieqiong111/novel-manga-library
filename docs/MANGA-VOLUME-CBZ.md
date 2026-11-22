@@ -2,21 +2,22 @@
 
 独立归档服务每 60 秒查看 Suwayomi 已下载的章节。WebUI、DSH 以及 Suwayomi 自己的下载都由同一个服务归档。归档通过 Suwayomi 的 `/api/v1/chapter/{id}/download` 读取已完成的数据，沿用原始图片格式和页序。归档文件含连续页号和供 Komga 读取的 `ComicInfo.xml`。
 
-- 每章下载完成后自动生成一个 CBZ。带卷号的分话也逐章生成，无需等待同卷的其他章节。
+- 每章下载完成后自动生成一个 CBZ，随后可按已核验的目录合卷。无须凑齐一卷才能开始阅读。
 - 例如 `第001话 [7350].cbz`。末尾是 Suwayomi 章节 ID，可区分同话的不同版本。无话号的独立章节用 `章节 [7350].cbz`。
 - 来源若只提供整卷条目，须换成提供分话的来源。旧卷包保留，已在旧卷包中的章节不会自动再写一份。
 - 默认写入所选漫画目录下的作品文件夹。开启分卷归档后，新 CBZ 可放入该作品的单行本子目录。来源与作品 ID 保存在隐藏标记中。
 
 ## 可选分卷归档
 
-在「系统设置 → NAS 保存目录 → 漫画分卷归档」打开「按单行本建立子目录」，并选择目录来源。可以随时关闭。已归档的文件继续以原位置提供，切换设置不会迁移或重复打包它们。
+在「系统设置 → NAS 保存目录 → 漫画分卷归档」打开「按单行本建立子目录」，并选择目录来源。凑齐已核验目录的章节后，按目录顺序合成 `第NN卷.cbz`。原单话保存在同一卷的隐藏 `.studio-chapters` 目录以供恢复。缺话时继续使用单话 CBZ。
+
+整卷的 `ComicInfo.xml` 记录每话的起始图像索引和章节名称（`Pages/Page` 的 `Image` 从 0 起算，`Bookmark` 为章节名称）。支持 ComicInfo 书签的阅读器可按话跳转。Komga 1.30.1 网页阅读器按页导航。
 
 ```text
 漫画/
 └── 为美好的世界献上祝福！/
     ├── 第01卷/
-    │   ├── 第001话 [7350].cbz
-    │   └── 第002话 [7351].cbz
+    │   └── 第01卷.cbz
     ├── 第02卷/
     │   └── 第006话 [7355].cbz
     └── 未分卷/
@@ -25,7 +26,7 @@
 
 Studio 先绑定 Bangumi 漫画系列和 Suwayomi 的确切来源与作品。出版社目录和已核对的参考目录可供匹配。配置 OpenTomeDB 后，Studio 可以用 Bangumi 单行本的确切 ISBN 匹配该版本。重复话号、无法确认的拆话、缺少目录和冲突列入「未分卷」。
 
-在「刮削设置」打开「下载后刷新」和「Komga 收录后自动刮削」，按需启用封面。Studio 在作品目录中为已下载的章节建立带卷号的硬链接，并在 Komga 中排除底层分卷目录。Komga 将这些入口收录到同一个漫画系列。每卷对应的 Bangumi 单行本链接和不同封面挂在该卷已收录的代表章节上。代表章节保留其原本的话名。卷资料也可以在 Studio 的「按单行本查看」中查询。原 CBZ 与下载记录仍使用卷目录。
+在「刮削设置」打开「下载后刷新」和「Komga 收录后自动刮削」，按需启用封面。Studio 在作品目录为整卷 CBZ 及尚未合卷的单话建立入口，Komga 在同一漫画系列中显示它们。已合卷使用对应 Bangumi 单行本的封面及元数据。未合卷时，封面挂在代表章节上。卷资料可以在 Studio 的「按单行本查看」中查询。
 
 在漫画详情选择「按单行本查看」后，可以查询 Bangumi 单行本，或用选中卷的 ISBN 查询已配置的 OpenTomeDB。OpenTomeDB 官方 SQLite 可以放入 Studio 的数据目录，配置 `LN_OPENTOME_SQLITE=/data/manga-metadata.sqlite` 并重启 Studio。数据库以只读方式打开。数据许可和来源见 [OpenTomeDB](https://opentomedb.com/data/)。
 
@@ -53,7 +54,7 @@ Studio 先绑定 Bangumi 漫画系列和 Suwayomi 的确切来源与作品。出
 
 将 DSH 接入 Studio 使用的同一归档服务，为 DSH 配置 `LN_VOLUME_ARCHIVE_URL`，或经由 `mangaConnectionFile` 提供。Agent 先通过 `manga_komga_status` 确认可归档的章节 ID，再用 `manga_komga_download` 提交。详见 [Agent 约束](DSH-MANGA-ARCHIVE-RULES.md)。
 
-`waiting_archive` 表示 Suwayomi 下载完、等待 Docker 写入 CBZ。`archived` 和返回的文件名确认单章文件已生成。`in_legacy_volume` 指该章节已保存在旧卷包。`archive_failed` 表示打包失败。只有 Suwayomi 提供了队列百分比时，才会在 `task.percent` 返回进度值。
+`waiting_archive` 表示 Suwayomi 下载完、等待 Docker 写入 CBZ。`archived` 返回实际 CBZ 文件名。章节状态中的 `packedVolume: true` 表示该话已合卷，路径指向整卷 CBZ。`in_legacy_volume` 指该章节已保存在旧卷包。`archive_failed` 表示打包失败。`task.percent` 来自 Suwayomi 的下载队列。
 
 归档容器还提供内部只读 `GET http://suwayomi-volume-cbz:8788/downloads`，返回 Suwayomi 的当前队列。容器每 15 秒查看一次队列，只在状态或百分比变化时记录日志。运行 `docker compose -f docker/volume-cbz/compose.yml logs -f volume-cbz` 可以查看下载进度和 CBZ 生成记录。
 

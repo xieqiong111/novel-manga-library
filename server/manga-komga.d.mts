@@ -31,6 +31,7 @@ export interface MangaArchiveStatus {
     downloaded: boolean
     filename: string | null
     legacyVolume?: string
+    packedVolume?: true
     relativeFile?: string
     location?: DownloadLocation
     state: MangaArchiveState

@@ -71,6 +71,7 @@ export interface KomgaChapter {
   id: string
   filename: string | null
   legacyVolume?: string
+  packedVolume?: true
   state: 'idle' | 'archived' | 'waiting_archive' | 'archive_failed' | 'failed' | 'downloading' | 'queued' | 'in_legacy_volume'
   task: MangaTask | null
 }

@@ -175,10 +175,12 @@ describe('Suwayomi BFF routes', () => {
   it('only queues eligible chapters and skips existing files and chapters already covered by an old volume', async () => {
     const download = vi.fn(async () => ({ queued: ['31'], skipped: [], completed: [], unconfirmed: [] }))
     const getVolumes = vi.fn(async () => ({
-      archiveMode: 'chapter', chapterCount: 3, volumes: [], chapters: [
+      archiveMode: 'chapter', chapterCount: 4, volumes: [], chapters: [
         { id: '29', name: '序章', number: null, downloaded: true, filename: '章节 [29].cbz' },
         { id: '30', name: '第2卷 第1话', number: '1', downloaded: true, filename: null, legacyVolume: '第02卷.cbz' },
         { id: '31', name: '第2卷 第2话', number: '2', downloaded: false, filename: null },
+        { id: '32', name: '第3卷 第3话', number: '3', downloaded: true, filename: '第03卷.cbz', packedVolume: true,
+          relativeFile: '作品/第03卷/第03卷.cbz' },
       ],
     }))
     const tasks = vi.fn(async () => ({ queue: [{ mangaId: '22', chapterId: '31', state: 'running', percent: 38 }] }))
@@ -194,12 +196,14 @@ describe('Suwayomi BFF routes', () => {
       { id: '29', filename: '章节 [29].cbz', state: 'archived' },
       { id: '30', filename: null, legacyVolume: '第02卷.cbz', state: 'in_legacy_volume' },
       { id: '31', filename: null, state: 'downloading', task: { percent: 38 } },
+      { id: '32', filename: '第03卷.cbz', state: 'archived', packedVolume: true, relativeFile: '作品/第03卷/第03卷.cbz' },
     ] })
     expect((await invoke('POST', { volume: 2 })).status).toBe(409)
     expect((await invoke('POST', { chapterIds: ['99'] })).status).toBe(409)
     expect(download).not.toHaveBeenCalled()
-    expect((await invoke('POST', { chapterIds: ['29', '30', '31'] })).json()).toMatchObject({
-      queued: ['31'], skipped: ['29', '30'], archived: [{ chapterId: '29', filename: '章节 [29].cbz' }],
+    expect((await invoke('POST', { chapterIds: ['29', '30', '31', '32'] })).json()).toMatchObject({
+      queued: ['31'], skipped: ['29', '30', '32'], archived: [{ chapterId: '29', filename: '章节 [29].cbz' },
+        { chapterId: '32', filename: '第03卷.cbz', relativeFile: '作品/第03卷/第03卷.cbz' }],
     })
     expect(download).toHaveBeenCalledExactlyOnceWith({ mangaId: '22', chapterIds: ['31'] })
     getVolumes.mockRejectedValueOnce(new SuwayomiError('VOLUME_ARCHIVE_UNAVAILABLE', 'offline', 503))

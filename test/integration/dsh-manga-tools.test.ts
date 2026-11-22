@@ -115,7 +115,7 @@ describe('native manga tools', () => {
   it('exposes per-chapter progress and instructs DSH to wait for the Docker-generated CBZ', async () => {
     expect(await call('manga_komga_status', { mangaId: '22' })).toMatchObject({
       ok: true, chapters: [{ id: '41', state: 'downloading', task: { percent: 61 } }],
-      notice: expect.stringContaining('每章下载后 Docker 自动生成一个 CBZ'),
+      notice: expect.stringContaining('已核验且凑齐的单行本会合为一个 CBZ'),
     })
     expect(komga.status).toHaveBeenCalledWith('22')
     const schema = ctx.tools.schemas().find((entry) => entry.name === 'manga_komga_download')

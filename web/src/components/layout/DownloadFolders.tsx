@@ -29,7 +29,7 @@ export function DownloadFolders() {
   return (
     <Card className="p-5">
       <SectionTitle title="NAS 保存目录" />
-      <p className="mb-4 mt-2 text-xs text-ink-soft">选择轻小说 EPUB 和漫画 CBZ 的保存位置。每话生成一个 CBZ，可为新归档选择是否建立单行本子目录。</p>
+      <p className="mb-4 mt-2 text-xs text-ink-soft">选择轻小说 EPUB 和漫画 CBZ 的保存位置。漫画可按单行本目录自动合卷。</p>
       {catalog.loading && !catalog.data && <p role="status"><Spinner /> 读取保存目录…</p>}
       {catalog.error && <p role="alert" className="text-sm text-negative">{catalog.error}</p>}
       {catalog.data && <div className="grid gap-4 md:grid-cols-2">
@@ -72,7 +72,7 @@ function MangaArchiveSettings({ saved, reload }: { saved: ArchiveOptions; reload
         disabled={busy} onChange={(event) => setOptions({ ...options, enabled: event.target.checked })} />
       按单行本建立子目录
     </label>
-    <p className="text-xs text-ink-soft">新归档使用「作品／第 N 卷／章节 CBZ」，待确认章节进入「未分卷」。Komga 自动刮削和刷新使用刮削设置页的开关。</p>
+    <p className="text-xs text-ink-soft">按已核验的目录集齐一卷后自动合为一个带章节书签的 CBZ。缺话继续保存单话，待确认章节进入「未分卷」。</p>
     <fieldset disabled={busy} className="flex flex-wrap gap-3 text-xs">
       <legend className="mb-2 font-semibold">卷目录来源</legend>
       {catalogSources.map(([source, label]) => <label key={source} className="flex items-center gap-1.5">
