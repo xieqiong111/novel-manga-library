@@ -29,8 +29,9 @@ async function isVolumeFolder(folder, mangaId, sourceId) {
   try {
     const stat = await lstat(marker)
     if (!stat.isFile() || stat.size > 1024) return false
-    const work = JSON.parse(await readFile(marker, 'utf8'))
-    return String(work.mangaId) === mangaId && (!sourceId || String(work.sourceId) === sourceId)
+    const work = JSON.parse(await readFile(marker, 'utf8'), (key, value, context) =>
+      key === 'sourceId' && typeof value === 'number' ? context.source : value)
+    return String(work.mangaId) === mangaId && (!sourceId || work.sourceId === sourceId)
   } catch { return false }
 }
 

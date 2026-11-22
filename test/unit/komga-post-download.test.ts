@@ -83,6 +83,45 @@ describe('after a manga CBZ is saved', () => {
     } finally { await f.cleanup() }
   })
 
+  it('scrapes the volume and updates its collection with exact 64-bit Suwayomi source IDs', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'studio-follow-up-volume-'))
+    try {
+      const folder = '作品/第01卷'
+      const file = folder + '/第001话 [21].cbz'
+      const downloadFoldersFile = path.join(root, 'folders.json')
+      await mkdir(path.join(root, folder), { recursive: true })
+      await writeFile(path.join(root, file), 'chapter')
+      await writeFile(path.join(root, '作品', '.studio-series.json'), '{"sourceId":774030471139699415,"mangaId":22}')
+      await mkdir(path.join(root, 'bangumi-manga'))
+      await writeFile(path.join(root, 'bangumi-manga', '22.json'), JSON.stringify({
+        sourceId: '774030471139699415', mangaId: '22', subjectId: 143035, title: '作品',
+      }))
+      const settings = {
+        config: { dataDir: root, downloadFoldersFile }, mangaStorageRoot: root, mangaStorageLabel: root,
+        integrations: { preferences: { postDownloadScrape: true, scrapeEnabled: true } },
+      }
+      const archiveHistory = { events: async (after: number) => after ? [] : [{ seq: 1, file, mangaId: '22' }] }
+      const worker = (await openKomgaPostDownload({ settings, archiveHistory, logger: { warn() {} }, now: () => 0 }))!
+      const metadata = vi.fn(async () => ({ updated: true, subjectId: 143034 }))
+      const client = {
+        libraries: async () => ({ libraries: [{ id: 'library', root }] }),
+        series: async () => ({ content: [{ id: 'volume', path: root + '/' + folder }], page: { number: 0, last: true } }),
+        metadataBooks: async () => ({ books: [{ path: root + '/' + file }], last: true, page: 0 }),
+        volumeCollection: vi.fn(async () => 'work'),
+      }
+      const mangaVolumes = {
+        volumeSubject: vi.fn(async () => 143034),
+        rememberVolume: vi.fn(async () => {}),
+      }
+      await worker.tick({ currentKomga: () => client, metadata, mangaVolumes, scan: vi.fn() })
+      expect(metadata).toHaveBeenCalledWith('auto-volume', {
+        libraryId: 'library', seriesId: 'volume', subjectId: 143034, title: '作品 · 第01卷',
+      }, expect.any(Function), undefined)
+      expect(client.volumeCollection).toHaveBeenCalledWith('作品', undefined, ['volume'])
+      expect(worker.status(file)).toMatchObject({ phase: 'done', message: expect.stringContaining('已加入作品收藏集') })
+    } finally { await rm(root, { recursive: true, force: true }) }
+  })
+
   it('tries the configured official archive only when the real-time connection fails', async () => {
     const f = await fixture()
     try {
