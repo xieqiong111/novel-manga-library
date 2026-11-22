@@ -420,38 +420,40 @@ export function createBangumiKomga({ url, requestMetadata, komga, getOptions, ge
     return apply({ previewId: planned.previewId }, ensureCurrent)
   }
 
-  async function autoVolume({ libraryId, seriesId, subjectId: volumeId, title }, ensureCurrent, connection) {
-    if (!subjectId(volumeId) || !text(title, 300)) {
-      throw new MetadataError(400, 'INVALID_VOLUME_SUBJECT', '未确认该卷的 Bangumi 条目。')
+  async function autoVolume({ libraryId, seriesId, bookId, subjectId: volumeId }, ensureCurrent, connection) {
+    if (!subjectId(volumeId) || !komgaId(seriesId) || !komgaId(bookId)) {
+      throw new MetadataError(400, 'INVALID_VOLUME_SUBJECT', '未确认该卷的 Bangumi 条目或 Komga 章节。')
     }
     const client = komga()
-    const target = await client.metadataTarget('series', seriesId)
+    const target = await client.metadataTarget('book', bookId)
     ensureCurrent()
-    if (target.libraryId !== libraryId) throw new MetadataError(409, 'METADATA_CHANGED', '单行本已移出所选书库。')
+    if (target.libraryId !== libraryId || target.seriesId !== seriesId) {
+      throw new MetadataError(409, 'METADATA_CHANGED', '代表章节已移出所选作品。')
+    }
     const options = preferences()
     checkLibrary(libraryId, options.libraries, 'manga')
-    const data = await adapter('volume-detail', { kind: 'manga', scope: 'book', subjectId: volumeId,
-      includeCover: options.seriesCover }, connection)
+    const includeCover = options.bookCover || options.seriesCover
+    const data = await adapter('volume-detail', { kind: 'manga', scope: 'book', subjectId: volumeId, includeCover }, connection)
     const subject = candidate(data.subject)
     if (subject.id !== volumeId || !object(data.metadata)) {
       throw new MetadataError(502, 'INVALID_METADATA_RESPONSE', 'Bangumi 返回的单行本条目与请求不符。')
     }
-    const input = { ...data.metadata, title }
+    const input = { ...data.metadata }
     if (japaneseText(text(input.summary, 20000))) delete input.summary
-    const patch = changes(target.metadata, input, 'series', { ...subject, nameCn: title }, options)
-    if (patch.title) patch.titleLock = true
-    const cover = options.seriesCover ? await previewCover(client, 'series', seriesId, data) : null
+    const patch = changes(target.metadata, input, 'book', subject, options)
+    const cover = includeCover ? await previewCover(client, 'book', bookId, data) : null
     ensureCurrent()
     if (Object.keys(patch).length) {
-      const current = await client.metadataTarget('series', seriesId)
-      if (current.libraryId !== libraryId || fingerprint(current.metadata, patch, true) !== fingerprint(target.metadata, patch, true)) {
-        throw new MetadataError(409, 'METADATA_CHANGED', 'Komga 单行本元数据已改变。')
+      const current = await client.metadataTarget('book', bookId)
+      if (current.libraryId !== libraryId || current.seriesId !== seriesId ||
+          fingerprint(current.metadata, patch, true) !== fingerprint(target.metadata, patch, true)) {
+        throw new MetadataError(409, 'METADATA_CHANGED', 'Komga 代表章节元数据已改变。')
       }
       ensureCurrent()
-      await client.patchMetadata('series', seriesId, patch)
+      await client.patchMetadata('book', bookId, patch)
       ensureCurrent()
     }
-    const coverResult = cover?.status === 'pending' ? await applyCover(client, 'series', seriesId, data.coverUrl, fetchCover) : cover
+    const coverResult = cover?.status === 'pending' ? await applyCover(client, 'book', bookId, data.coverUrl, fetchCover) : cover
     return { updated: Object.keys(patch).length > 0 || coverResult?.status === 'applied', cover: coverResult,
       subjectId: volumeId, isbn: typeof data.isbn === 'string' ? data.isbn : null, date: subject.date || null,
       summary: subject.summary || null, ...provenance(data) }

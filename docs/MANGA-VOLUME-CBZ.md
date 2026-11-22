@@ -25,7 +25,7 @@
 
 Studio 先绑定 Bangumi 漫画系列和 Suwayomi 的确切来源与作品。出版社目录和已核对的参考目录可供匹配。配置 OpenTomeDB 后，Studio 可以用 Bangumi 单行本的确切 ISBN 匹配该版本。重复话号、无法确认的拆话、缺少目录和冲突列入「未分卷」。
 
-在「刮削设置」打开「下载后刷新」和「Komga 收录后自动刮削」，按需启用系列封面。Komga 扫描到卷目录和该 CBZ 后，Studio 用该卷的 Bangumi 「单行本」条目刮削元数据，并将卷按序加入以作品名命名的收藏集。其他作品缺少卷条目时，任务记录会显示原因。中文显示名沿用作品的 Bangumi 中文标题和卷号。卷的 ISBN 与出版日期留在 Studio，Komga 系列支持标题、简介、链接和封面。
+在「刮削设置」打开「下载后刷新」和「Komga 收录后自动刮削」，按需启用封面。Studio 在作品目录中为已下载的章节建立带卷号的硬链接，并在 Komga 中排除底层分卷目录。Komga 将这些入口收录到同一个漫画系列。每卷对应的 Bangumi 单行本链接和不同封面挂在该卷已收录的代表章节上。代表章节保留其原本的话名。卷资料也可以在 Studio 的「按单行本查看」中查询。原 CBZ 与下载记录仍使用卷目录。
 
 在漫画详情选择「按单行本查看」后，可以查询 Bangumi 单行本，或用选中卷的 ISBN 查询已配置的 OpenTomeDB。OpenTomeDB 官方 SQLite 可以放入 Studio 的数据目录，配置 `LN_OPENTOME_SQLITE=/data/manga-metadata.sqlite` 并重启 Studio。数据库以只读方式打开。数据许可和来源见 [OpenTomeDB](https://opentomedb.com/data/)。
 

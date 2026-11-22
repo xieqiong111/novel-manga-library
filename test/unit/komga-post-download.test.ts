@@ -83,7 +83,7 @@ describe('after a manga CBZ is saved', () => {
     } finally { await f.cleanup() }
   })
 
-  it('scrapes the volume and updates its collection with exact 64-bit Suwayomi source IDs', async () => {
+  it('links the chapter into one series and scrapes its volume cover with exact 64-bit source IDs', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'studio-follow-up-volume-'))
     try {
       const folder = '作品/第01卷'
@@ -105,9 +105,9 @@ describe('after a manga CBZ is saved', () => {
       const metadata = vi.fn(async () => ({ updated: true, subjectId: 143034 }))
       const client = {
         libraries: async () => ({ libraries: [{ id: 'library', root }] }),
-        series: async () => ({ content: [{ id: 'volume', path: root + '/' + folder }], page: { number: 0, last: true } }),
-        metadataBooks: async () => ({ books: [{ path: root + '/' + file }], last: true, page: 0 }),
-        volumeCollection: vi.fn(async () => 'work'),
+        series: async () => ({ content: [{ id: 'work', path: root + '/作品' }], page: { number: 0, last: true } }),
+        metadataBooks: async () => ({ books: [{ id: 'book', path: root + '/作品/第01卷 - 第001话 [21].cbz' }], last: true, page: 0 }),
+        excludeVolumeFolder: vi.fn(async () => {}),
       }
       const mangaVolumes = {
         volumeSubject: vi.fn(async () => 143034),
@@ -115,10 +115,10 @@ describe('after a manga CBZ is saved', () => {
       }
       await worker.tick({ currentKomga: () => client, metadata, mangaVolumes, scan: vi.fn() })
       expect(metadata).toHaveBeenCalledWith('auto-volume', {
-        libraryId: 'library', seriesId: 'volume', subjectId: 143034, title: '作品 · 第01卷',
+        libraryId: 'library', seriesId: 'work', bookId: 'book', subjectId: 143034,
       }, expect.any(Function), undefined)
-      expect(client.volumeCollection).toHaveBeenCalledWith('作品', undefined, ['volume'])
-      expect(worker.status(file)).toMatchObject({ phase: 'done', message: expect.stringContaining('已加入作品收藏集') })
+      expect(client.excludeVolumeFolder).toHaveBeenCalledWith('library', root + '/作品/第01卷')
+      expect(worker.status(file)).toMatchObject({ phase: 'done', message: expect.stringContaining('已核对作品下的卷元数据') })
     } finally { await rm(root, { recursive: true, force: true }) }
   })
 

@@ -391,45 +391,17 @@ export function createKomgaClient(config = readKomgaConfig(), options = {}) {
     }
   }
 
-  async function volumeCollection(name, knownId, memberIds) {
-    const wanted = [...new Set(memberIds.map((id) => safeId(id, 'collection series ID')))]
-    const validate = (data) => {
-      if (!data || data.name !== name || data.filtered === true || !Array.isArray(data.seriesIds) || data.seriesIds.length > 5000) {
-        throw new KomgaError('INVALID_COLLECTION', 'Komga returned an invalid or inaccessible collection', 409)
-      }
-      return { id: requiredResponseId(data.id, 'collection ID'), ordered: data.ordered === true,
-        seriesIds: data.seriesIds.map((id) => requiredResponseId(id, 'collection series ID')) }
+  async function excludeVolumeFolder(libraryId, directory) {
+    const route = '/api/v1/libraries/' + safeId(libraryId, 'library ID')
+    const library = await requestJson(route)
+    if (library?.id !== libraryId || !Array.isArray(library.scanDirectoryExclusions) ||
+        !library.scanDirectoryExclusions.every((entry) => typeof entry === 'string')) {
+      throw new KomgaError('INVALID_RESPONSE', 'Komga returned invalid library exclusions', 502)
     }
-    let existing
-    if (knownId) {
-      existing = validate(await requestJson('/api/v1/collections/' + safeId(knownId, 'collection ID')))
-    } else {
-      const payload = await requestJson('/api/v1/collections?unpaged=true')
-      const rows = Array.isArray(payload) ? payload : payload?.content
-      if (!Array.isArray(rows) || rows.length > 5000) throw new KomgaError('INVALID_RESPONSE', 'Komga returned invalid collections', 502)
-      const sameName = rows.filter((row) => row?.name === name)
-      const matches = sameName.filter((row) => Array.isArray(row.seriesIds) && row.seriesIds.some((id) => wanted.includes(id)))
-      if (matches.length > 1 || (sameName.length && !matches.length)) {
-        throw new KomgaError('COLLECTION_CONFLICT', 'Komga 已有同名收藏集，请先核对归属。', 409)
-      }
-      if (matches.length) existing = validate(matches[0])
-    }
-    if (!existing) {
-      const created = validate(await requestJson('/api/v1/collections', { method: 'POST',
-        body: { name, ordered: true, seriesIds: wanted } }))
-      if (!wanted.every((id) => created.seriesIds.includes(id))) throw new KomgaError('INVALID_COLLECTION', 'Komga did not confirm the collection members', 502)
-      return created.id
-    }
-    const seriesIds = [...wanted, ...existing.seriesIds.filter((id) => !wanted.includes(id))]
-    if (existing.ordered && seriesIds.every((id, index) => id === existing.seriesIds[index])) return existing.id
-    const route = '/api/v1/collections/' + existing.id
-    const { response } = await request(route, { method: 'PATCH', body: { ordered: true, seriesIds } })
-    if (response.status !== 204) throw new KomgaError('INVALID_COLLECTION', 'Komga did not confirm the collection update', 502)
-    const confirmed = validate(await requestJson(route))
-    if (!confirmed.ordered || !wanted.every((id, index) => confirmed.seriesIds[index] === id)) {
-      throw new KomgaError('INVALID_COLLECTION', 'Komga did not confirm the collection order', 502)
-    }
-    return confirmed.id
+    if (library.scanDirectoryExclusions.includes(directory)) return
+    const { response } = await request(route, { method: 'PATCH',
+      body: { scanDirectoryExclusions: [...library.scanDirectoryExclusions, directory] } })
+    if (response.status !== 204) throw new KomgaError('INVALID_RESPONSE', 'Komga did not confirm the directory exclusion', 502)
   }
 
   async function status() {
@@ -439,5 +411,5 @@ export function createKomgaClient(config = readKomgaConfig(), options = {}) {
     return { configured: true, connected: true, libraryCount: result.libraries.length }
   }
 
-  return { configured, libraries, series, thumbnail, status, scanLibrary, metadataBooks, metadataTarget, patchMetadata, hasUploadedCover, uploadCover, volumeCollection }
+  return { configured, libraries, series, thumbnail, status, scanLibrary, metadataBooks, metadataTarget, patchMetadata, hasUploadedCover, uploadCover, excludeVolumeFolder }
 }
