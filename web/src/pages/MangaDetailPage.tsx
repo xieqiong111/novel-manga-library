@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { ArrowLeft, BookOpen, Download, ExternalLink, RefreshCw } from 'lucide-react'
 import { Link, useParams } from 'react-router-dom'
 import { Badge, Button, Card, EmptyState, SectionTitle, Spinner } from '@/components/common/ui'
@@ -8,7 +8,8 @@ import { useToast } from '@/components/common/Toast'
 import { MangaCover, mangaDate, mangaSource, mangaStatus } from '@/components/manga/MangaCard'
 import { MangaNotice } from '@/components/manga/MangaNotice'
 import { useAsync } from '@/hooks/useAsync'
-import { mangaApi, mangaKomgaApi, type KomgaChapter } from '@/services/mangaApi'
+import { chaptersForVolumeView, mangaApi, mangaKomgaApi, type KomgaChapter } from '@/services/mangaApi'
+import { mangaVolumeGroups } from '@/data/mangaVolumes'
 import { IS_LIVE } from '@/services/runtime'
 import type { MangaChapter } from '@/types/manga'
 
@@ -36,11 +37,24 @@ function MangaDetail({ id }: { id: string }) {
   const [actionError, setActionError] = useState('')
   const [confirmUnsubscribe, setConfirmUnsubscribe] = useState(false)
   const [archiveRevision, setArchiveRevision] = useState(0)
+  const [volumeMode, setVolumeMode] = useState(false)
+  const [volumeSelection, setVolumeSelection] = useState('')
   const chapterPage = useAsync(() => mangaApi.chapters(id, offset), [id, offset, revision])
   const manga = detail.error ? null : detail.data
   const localSource = manga?.sourceId === '0'
-  const archive = useAsync(() => !IS_LIVE || localSource || !chapters.length ? Promise.resolve(null)
-    : mangaKomgaApi.status(id, chapters.slice(-100).map((chapter) => chapter.id)), [id, localSource, chapters, archiveRevision])
+  const volumePage = useAsync(() => volumeMode ? chaptersForVolumeView(id) : Promise.resolve(null), [id, volumeMode, revision])
+  const volumes = useMemo(() => mangaVolumeGroups(manga, volumePage.data ?? []), [manga, volumePage.data])
+  const volumeKey = volumeSelection || String(volumes.groups[0]?.number ?? 'unassigned')
+  const activeVolume = volumes.groups.find((group) => String(group.number) === volumeKey)
+  const volumePending = volumeMode && (volumePage.loading || !volumePage.data) && !volumePage.error
+  const visibleChapters = volumeMode
+    ? volumePage.data && !volumePending && !volumePage.error ? activeVolume?.chapters ?? volumes.unassigned : []
+    : chapters
+  const currentError = volumeMode ? volumePage.error : chapterPage.error
+  const currentLoading = volumeMode ? volumePending : chapterPage.loading
+  const archiveIds = [...new Set([...selected, ...visibleChapters.map((chapter) => chapter.id)])].slice(0, 100).join(',')
+  const archive = useAsync(() => !IS_LIVE || localSource || !archiveIds ? Promise.resolve(null)
+    : mangaKomgaApi.status(id, archiveIds.split(',')), [id, localSource, archiveIds, archiveRevision])
   const archiveRows = new Map(archive.data?.chapters?.map((chapter) => [chapter.id, chapter]) ?? [])
   const excluded = new Set(archive.data?.missingChapterIds)
   const needsArchivePoll = archive.data?.chapters?.some((chapter) =>
@@ -121,7 +135,7 @@ function MangaDetail({ id }: { id: string }) {
 
   const canDownload = (chapter: MangaChapter) => !localSource && !chapter.downloaded && !excluded.has(chapter.id) &&
     !['archived', 'in_legacy_volume'].includes(archiveRows.get(chapter.id)?.state ?? '')
-  const selectable = chapters.filter(canDownload)
+  const selectable = visibleChapters.filter(canDownload)
   const maxSelection = 50
   const latestId = chapters[0]?.id
 
@@ -181,6 +195,39 @@ function MangaDetail({ id }: { id: string }) {
             {actionError && <MangaNotice message={actionError} />}
             <Card className="p-4 sm:p-5">
               <SectionTitle title="章节" />
+              <div role="group" aria-label="章节查看方式" className="mt-3 flex flex-wrap items-center gap-2">
+                <Button size="sm" aria-pressed={!volumeMode} variant={volumeMode ? 'soft' : 'primary'} disabled={Boolean(busy)} onClick={() => {
+                  if (volumeMode) { setSelected([]); setVolumeMode(false) }
+                }}>按话查看</Button>
+                <Button size="sm" aria-pressed={volumeMode} variant={volumeMode ? 'primary' : 'soft'} disabled={Boolean(busy)} onClick={() => {
+                  if (!volumeMode) { setSelected([]); setVolumeMode(true) }
+                }}>按单行本查看</Button>
+              </div>
+              {volumeMode && volumePage.data && !currentLoading && !currentError && (
+                volumes.groups.length ? (
+                  <div className="mt-3 space-y-2 rounded-xl border border-line p-3">
+                    <label className="flex flex-wrap items-center gap-2 text-xs font-semibold text-ink">
+                      单行本
+                      <select aria-label="选择单行本" disabled={Boolean(busy)} value={activeVolume ? volumeKey : 'unassigned'}
+                        className="max-w-full rounded-lg border border-line bg-white px-2 py-1.5 text-xs text-ink dark:bg-zinc-900"
+                        onChange={(event) => { setSelected([]); setVolumeSelection(event.target.value) }}>
+                        {volumes.groups.map((group) => (
+                          <option key={group.number} value={group.number}>第 {group.number} 卷 · {group.chapters.length} 话可查看</option>
+                        ))}
+                        {volumes.unassigned.length > 0 && <option value="unassigned">未匹配单行本 · {volumes.unassigned.length} 项</option>}
+                      </select>
+                    </label>
+                    {activeVolume && (
+                      <p className="break-words text-xs text-ink-soft">
+                        {activeVolume.expected
+                          ? `第 ${activeVolume.number} 卷目录包含${activeVolume.expected.map((chapter) => `第 ${chapter} 话`).join('、')}。已匹配源站 ${activeVolume.chapters.length}/${activeVolume.expected.length} 话。`
+                          : `以下 ${activeVolume.chapters.length} 话由源站标注为第 ${activeVolume.number} 卷。`}
+                        {activeVolume.citation && <>{' '}<a href={activeVolume.citation.url} target="_blank" rel="noreferrer" className="font-semibold text-accent">{activeVolume.citation.label}</a></>}
+                      </p>
+                    )}
+                  </div>
+                ) : <p className="mt-3 text-xs text-ink-soft">暂无线索可确认单行本归属，以下显示源站的章节目录。</p>
+              )}
               {IS_LIVE && !localSource && <div className="mt-2 flex flex-wrap items-center gap-2">
                 <p className="text-xs text-ink-soft">
                   {archive.error ? archive.error
@@ -189,7 +236,7 @@ function MangaDetail({ id }: { id: string }) {
                     : archive.data?.available === false ? '未配置 Docker 归档，可下载到 Suwayomi。'
                     : '每章下载完成后，Docker 自动生成一个 CBZ 并写入作品文件夹。'}
                 </p>
-                <Button size="sm" disabled={!chapters.length || archive.loading} onClick={() => setArchiveRevision((current) => current + 1)}
+                <Button size="sm" disabled={!visibleChapters.length || archive.loading} onClick={() => setArchiveRevision((current) => current + 1)}
                   icon={<RefreshCw className="h-3.5 w-3.5" />}>刷新归档状态</Button>
               </div>}
               <div className="my-3 flex flex-wrap items-center gap-2">
@@ -197,22 +244,23 @@ function MangaDetail({ id }: { id: string }) {
                   selectable.slice(0, maxSelection).every((chapter) => selected.includes(chapter.id))
                     ? []
                     : selectable.slice(0, maxSelection).map((chapter) => chapter.id),
-                )}>选择可下载章节</Button>
+                )}>{volumeMode && activeVolume ? '选择本卷可下载章节' : '选择可下载章节'}</Button>
                 <Button size="sm" variant="primary" loading={busy === 'download'}
-                  disabled={!selected.length || Boolean(busy) || chapterPage.loading || Boolean(chapterPage.error) ||
+                  disabled={!selected.length || Boolean(busy) || currentLoading || Boolean(currentError) ||
                     (IS_LIVE && (archive.loading || Boolean(archive.error) || ['volume', 'unsupported'].includes(archive.data?.archiveMode ?? '')))}
                   icon={<Download className="h-3.5 w-3.5" />} onClick={() => void download()}>下载选中章节（{selected.length}）</Button>
                 <span className="text-xs text-ink-soft">
                   {localSource ? '本地漫画中的章节已存放在 Suwayomi 数据目录。' : `每次最多 ${maxSelection} 章`}
                 </span>
               </div>
-              {chapterPage.error && <MangaNotice message={`章节不可用 · ${chapterPage.error}`} />}
-              {!chapterPage.loading && !chapterPage.error && !chapters.length && (
-                <EmptyState icon={<BookOpen />} title="暂无章节" description="点击更新章节，从漫画源读取最新目录。" />
+              {currentError && <MangaNotice message={`章节不可用 · ${currentError}`} />}
+              {!currentLoading && !currentError && !visibleChapters.length && (
+                <EmptyState icon={<BookOpen />} title={activeVolume ? '源站暂无已匹配章节' : '暂无章节'}
+                  description="点击更新章节，从漫画源读取最新目录。" />
               )}
-              {!chapterPage.error && (
+              {!currentError && (
                 <ul className="divide-y divide-line">
-                  {chapters.map((chapter) => (
+                  {visibleChapters.map((chapter) => (
                     <li key={chapter.id}>
                       <label className="flex flex-wrap items-center gap-x-3 gap-y-1 py-3 text-xs">
                         <input type="checkbox" aria-label={chapter.name} checked={selected.includes(chapter.id)}
@@ -233,8 +281,8 @@ function MangaDetail({ id }: { id: string }) {
                   ))}
                 </ul>
               )}
-              {chapterPage.loading ? <p role="status" className="mt-3 text-xs text-ink-soft"><Spinner /> 读取章节…</p>
-                : hasNextPage && !chapterPage.error && (
+              {currentLoading ? <p role="status" className="mt-3 text-xs text-ink-soft"><Spinner /> {volumeMode ? '核对单行本章节…' : '读取章节…'}</p>
+                : !volumeMode && hasNextPage && !chapterPage.error && (
                   <Button size="sm" className="mt-3" disabled={Boolean(busy)} onClick={() => setOffset(chapters.length)}>加载更多章节</Button>
                 )}
             </Card>

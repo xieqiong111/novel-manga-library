@@ -58,6 +58,8 @@ POST 请求使用 `Content-Type: application/json`。失败使用 `{ "error": { 
 
 书架成员身份是 Studio 的追更显示依据。定时检查、分类筛选、章节下载策略和更新冲突由 Suwayomi 管理。轻小说的自动追更依旧是占位。
 
+漫画详情的「按单行本查看」会显示能从源站分卷标签或出版目录确认的逐话归属。出版目录按来源 ID 和作品地址匹配，未匹配章节依然可以查看。GoDa 漫画的《为美好的世界献上祝福！》已核对第 1 卷的第 1 至 5 话。选择本卷只是批量勾选可下载章节，归档仍是每话一个 CBZ。[第 1 卷出版社目录](https://yenpress.com/titles/9780316552561-konosuba-god-s-blessing-on-this-wonderful-world-vol-1-manga)
+
 [按卷下载到 Komga、归档 API 和 Docker 日志](MANGA-VOLUME-CBZ.md)
 
 ## 验证入口

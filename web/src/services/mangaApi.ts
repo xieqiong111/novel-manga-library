@@ -27,7 +27,7 @@ const liveMangaApi = {
     return apiFetch<SearchResult>(`/manga/search?${params}`)
   },
   details: (id: string) => apiFetch<Manga>(mangaPath(id)),
-  chapters: (id: string, offset: number) => apiFetch<ChapterPage>(`${mangaPath(id)}/chapters?offset=${offset}`),
+  chapters: (id: string, offset: number, limit = 50) => apiFetch<ChapterPage>(`${mangaPath(id)}/chapters?offset=${offset}&limit=${limit}`),
   refresh: (id: string) => apiFetch<ChapterPage>(`${mangaPath(id)}/chapters/refresh`, jsonPost()),
   library: (offset: number) => apiFetch<MangaPage>(`/manga/library?offset=${offset}`),
   setLibrary: (id: string, inLibrary: boolean) => apiFetch<Manga>(`${mangaPath(id)}/library`, jsonPost({ inLibrary })),
@@ -39,6 +39,19 @@ const liveMangaApi = {
 }
 
 export const mangaApi: typeof liveMangaApi = IS_LIVE ? liveMangaApi : mangaMock
+
+export async function chaptersForVolumeView(id: string) {
+  const chapters = new Map<string, MangaChapter>()
+  let offset = 0
+  while (offset < 5000) {
+    const page = await mangaApi.chapters(id, offset, 100)
+    for (const chapter of page.chapters) chapters.set(chapter.id, chapter)
+    if (!page.hasNextPage) return [...chapters.values()]
+    if (!page.chapters.length) break
+    offset += page.chapters.length
+  }
+  throw new Error('无法读取完整的章节目录，请切回按话查看。')
+}
 
 export interface KomgaChapter {
   id: string
