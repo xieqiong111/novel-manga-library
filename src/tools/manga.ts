@@ -20,7 +20,7 @@ const automaticArchive = [
   'In managed mode Studio owns all task execution. Follow the reported API results and do not start a local downloader.',
   'The archive service automatically packages each completed chapter as one CBZ. Your only follow-up is to poll the Studio tools. Do not call Docker, shell commands, zip utilities, or scripts to package files. Report archive failures.',
   'Use actual chapter IDs. Select individually downloadable chapters even when their names contain volume markers. If a source only has whole-volume entries, choose a source with separate chapters.',
-  'The files appear directly in the work-title folder under the configured manga output directory. Existing volume archives are preserved.',
+  'Studio may use a volume subfolder when enabled and verified, or 未分卷 while unresolved. Use manga_volume_catalog to check sources and publisher evidence. Existing volume archives are preserved.',
   'Use manga_komga_status for the archived state and location.nasPath when present. A name without a verified location is insufficient to claim an absolute path. Confirm Komga indexing separately.',
 ].join(' ')
 
@@ -266,6 +266,29 @@ export function registerMangaTools(ctx: Context, runtime: PluginRuntime, komga: 
             ...input, bangumiSubjectId: args.bangumiSubjectId, sourceQuery: args.sourceQuery, alternateNames: args.alternateNames,
           }) : await studioJob<Record<string, unknown>>('/api/manga/search', { query: input })
         return ok({ notice: '请按作品 ID 和来源确认版本，再查询章节和归档方式。同名结果可能来自不同来源。', ...result })
+      })
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'manga_volume_catalog',
+    description: 'Inspect or update a Studio manga volume catalog. Use resolve for Bangumi relations; opentome for ISBN-based lookup; search-publisher to discover official pages; verify-publisher to check a candidate and save chapters only if the work and edition match. If a publisher omits the contents, report it and leave the chapter unassigned. This tool does not download or package files.',
+    parameters: {
+      mangaId: { type: 'string', required: true, description: 'Exact Suwayomi manga ID.' },
+      action: { type: 'string', description: 'get, resolve, opentome, search-publisher, or verify-publisher. Default get.' },
+      volume: { type: 'number', description: 'Single volume number for source lookup or verification.' },
+      bangumiSubjectId: { type: 'number', description: 'Confirmed Bangumi series ID if the manga has no binding.' },
+      sourceTitle: { type: 'string', description: 'Exact source title, only after independently checking that an unlisted alias identifies the same edition.' },
+      publisherUrl: { type: 'string', description: 'Official Yen Press or KADOKAWA product URL returned by publisher search or found in official sources.' },
+    },
+    output: jsonOutput(),
+    async execute({ mangaId, action = 'get', ...body }) {
+      return runMangaTool(runtime, 'manga_volume_catalog', async () => {
+        if (!studioDelegated()) return { ok: false, error: { code: 'STUDIO_REQUIRED', message: '请连接 Studio 任务 API 查询卷目录。' } }
+        const pathname = `/api/manga/${encodeURIComponent(mangaId.trim())}/volume-catalog`
+        const result = action === 'get' ? await studioJob<Record<string, unknown>>(pathname)
+          : await studioJob<Record<string, unknown>>(pathname, { method: 'POST', body: { action, ...body } })
+        return ok(result)
       })
     },
   }))

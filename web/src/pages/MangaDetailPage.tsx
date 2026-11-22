@@ -8,7 +8,7 @@ import { useToast } from '@/components/common/Toast'
 import { MangaCover, mangaDate, mangaSource, mangaStatus } from '@/components/manga/MangaCard'
 import { MangaNotice } from '@/components/manga/MangaNotice'
 import { useAsync } from '@/hooks/useAsync'
-import { chaptersForVolumeView, mangaApi, mangaKomgaApi, type KomgaChapter } from '@/services/mangaApi'
+import { chaptersForVolumeView, mangaApi, mangaKomgaApi, mangaVolumeApi, type KomgaChapter } from '@/services/mangaApi'
 import { mangaVolumeGroups } from '@/data/mangaVolumes'
 import { IS_LIVE } from '@/services/runtime'
 import type { MangaChapter } from '@/types/manga'
@@ -23,6 +23,7 @@ const failureTitles = {
   subscribe: '订阅更新失败',
   refresh: '章节更新失败',
   download: '下载提交失败',
+  catalog: '卷目录更新失败',
 }
 
 function MangaDetail({ id }: { id: string }) {
@@ -43,7 +44,17 @@ function MangaDetail({ id }: { id: string }) {
   const manga = detail.error ? null : detail.data
   const localSource = manga?.sourceId === '0'
   const volumePage = useAsync(() => volumeMode ? chaptersForVolumeView(id) : Promise.resolve(null), [id, volumeMode, revision])
-  const volumes = useMemo(() => mangaVolumeGroups(manga, volumePage.data ?? []), [manga, volumePage.data])
+  const [catalogRevision, setCatalogRevision] = useState(0)
+  const catalog = useAsync(() => IS_LIVE && volumeMode && !localSource ? mangaVolumeApi.get(id) : Promise.resolve(null),
+    [id, volumeMode, localSource, catalogRevision])
+  const volumes = useMemo(() => {
+    const record = catalog.data
+    const resolved = record && (record.bound || !record.sources.includes('publisher')) ? record.volumes.map((row) => ({
+      ...row, citation: { url: row.url, label: row.source === 'publisher' ? '出版社官网' :
+        row.source === 'opentome' ? 'OpenTomeDB' : '参考目录' },
+    })) : undefined
+    return mangaVolumeGroups(manga, volumePage.data ?? [], resolved)
+  }, [manga, volumePage.data, catalog.data])
   const volumeKey = volumeSelection || String(volumes.groups[0]?.number ?? 'unassigned')
   const activeVolume = volumes.groups.find((group) => String(group.number) === volumeKey)
   const volumePending = volumeMode && (volumePage.loading || !volumePage.data) && !volumePage.error
@@ -93,6 +104,12 @@ function MangaDetail({ id }: { id: string }) {
       setBusy('')
     }
   }
+
+  const refreshCatalog = (action: 'resolve' | 'opentome', volume?: number) => run('catalog', async () => {
+    const result = await mangaVolumeApi.resolve(id, action, volume)
+    setCatalogRevision((value) => value + 1)
+    toast({ tone: 'success', title: result.volumes.length ? '卷目录已更新' : '已查询，暂无核验过的卷目录' })
+  })
 
   const changeMembership = (operation: 'library' | 'subscribe', add: boolean) => run(operation, async () => {
     if (operation === 'library') await mangaApi.setLibrary(id, add)
@@ -203,6 +220,16 @@ function MangaDetail({ id }: { id: string }) {
                   if (!volumeMode) { setSelected([]); setVolumeMode(true) }
                 }}>按单行本查看</Button>
               </div>
+              {IS_LIVE && volumeMode && !localSource && (
+                <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+                  <Button size="sm" disabled={Boolean(busy)} loading={busy === 'catalog'} onClick={() => void refreshCatalog('resolve')}>查询卷目录和 Bangumi 单行本</Button>
+                  {catalog.data?.openTomeConfigured && catalog.data.sources.includes('opentome') && (
+                    <Button size="sm" disabled={Boolean(busy)} onClick={() => void refreshCatalog('opentome', activeVolume?.number ?? 1)}>按 ISBN 查询 OpenTomeDB</Button>
+                  )}
+                  {catalog.data?.enabled && <span className="text-ink-soft">已开启分卷归档</span>}
+                  {catalog.error && <span role="alert" className="text-negative">{catalog.error}</span>}
+                </div>
+              )}
               {volumeMode && volumePage.data && !currentLoading && !currentError && (
                 volumes.groups.length ? (
                   <div className="mt-3 space-y-2 rounded-xl border border-line p-3">
@@ -217,10 +244,19 @@ function MangaDetail({ id }: { id: string }) {
                         {volumes.unassigned.length > 0 && <option value="unassigned">未匹配单行本 · {volumes.unassigned.length} 项</option>}
                       </select>
                     </label>
+                    {activeVolume && catalog.data?.volumeMetadata.filter((row) => row.number === activeVolume.number).map((row) => (
+                      <p key={row.subjectId} className="flex flex-wrap gap-2 text-xs text-ink-soft">
+                        <a href={`https://bgm.tv/subject/${row.subjectId}`} target="_blank" rel="noreferrer" className="text-accent">Bangumi 单行本</a>
+                        {row.isbn && <span>ISBN {row.isbn}</span>}
+                        {row.date && <span>{row.date}</span>}
+                      </p>
+                    ))}
                     {activeVolume && (
                       <p className="break-words text-xs text-ink-soft">
                         {activeVolume.expected
-                          ? `第 ${activeVolume.number} 卷目录包含${activeVolume.expected.map((chapter) => `第 ${chapter} 话`).join('、')}。已匹配源站 ${activeVolume.chapters.length}/${activeVolume.expected.length} 话。`
+                          ? activeVolume.confirmed === false
+                            ? `第 ${activeVolume.number} 卷参考目录待确认，暂不自动归卷。`
+                            : `第 ${activeVolume.number} 卷目录包含${activeVolume.expected.map((chapter) => `第 ${chapter} 话`).join('、')}。已匹配源站 ${activeVolume.chapters.length}/${activeVolume.expected.length} 话。`
                           : `以下 ${activeVolume.chapters.length} 话由源站标注为第 ${activeVolume.number} 卷。`}
                         {activeVolume.citation && <>{' '}<a href={activeVolume.citation.url} target="_blank" rel="noreferrer" className="font-semibold text-accent">{activeVolume.citation.label}</a></>}
                       </p>

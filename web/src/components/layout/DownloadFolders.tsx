@@ -7,7 +7,13 @@ import { useAsync } from '@/hooks/useAsync'
 import { useToast } from '@/components/common/Toast'
 
 type Kind = 'novel' | 'manga'
-type FolderSettings = { enabled: boolean; root: string | null; folder: string | null; legacyFolder?: string }
+const catalogSources = [
+  ['publisher', '出版社官方目录'],
+  ['reference', '核对过的参考目录'],
+  ['opentome', 'OpenTomeDB 本地目录'],
+] as const
+type ArchiveOptions = { enabled: boolean; sources: string[] }
+type FolderSettings = { enabled: boolean; root: string | null; folder: string | null; legacyFolder?: string; archive?: ArchiveOptions }
 type Folders = Record<Kind, FolderSettings>
 type Library = { id: string; name: string; selectable: boolean; folder: string | null }
 const endpoint = '/settings/download-folders'
@@ -23,15 +29,61 @@ export function DownloadFolders() {
   return (
     <Card className="p-5">
       <SectionTitle title="NAS 保存目录" />
-      <p className="mb-4 mt-2 text-xs text-ink-soft">选择轻小说 EPUB 和漫画 CBZ 的保存位置。漫画按作品名称建文件夹，CBZ 直接放在作品文件夹内。</p>
+      <p className="mb-4 mt-2 text-xs text-ink-soft">选择轻小说 EPUB 和漫画 CBZ 的保存位置。每话生成一个 CBZ，可为新归档选择是否建立单行本子目录。</p>
       {catalog.loading && !catalog.data && <p role="status"><Spinner /> 读取保存目录…</p>}
       {catalog.error && <p role="alert" className="text-sm text-negative">{catalog.error}</p>}
       {catalog.data && <div className="grid gap-4 md:grid-cols-2">
         <FolderPicker kind="novel" label="轻小说 EPUB" saved={catalog.data.novel} reload={reload} />
         <FolderPicker kind="manga" label="漫画 CBZ" saved={catalog.data.manga} reload={reload} />
       </div>}
+      {catalog.data?.manga.enabled && catalog.data.manga.archive && (
+        <MangaArchiveSettings key={JSON.stringify(catalog.data.manga.archive)} saved={catalog.data.manga.archive} reload={reload} />
+      )}
     </Card>
   )
+}
+
+function MangaArchiveSettings({ saved, reload }: { saved: ArchiveOptions; reload: () => void }) {
+  const { toast } = useToast()
+  const [options, setOptions] = useState(saved)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const changed = JSON.stringify(options) !== JSON.stringify(saved)
+  const toggle = (source: string) => setOptions((current) => ({
+    ...current,
+    sources: catalogSources.map(([key]) => key).filter((key) =>
+      key === source ? !current.sources.includes(key) : current.sources.includes(key)),
+  }))
+  async function save() {
+    setError('')
+    setBusy(true)
+    try {
+      await post(endpoint + '/manga-archive', options)
+      toast({ tone: 'success', title: '漫画归档设置已保存' })
+      reload()
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : '保存漫画归档设置失败。')
+    } finally { setBusy(false) }
+  }
+  return <section className="mt-4 space-y-3 rounded-xl border border-line p-4">
+    <h3 className="text-sm font-semibold text-ink">漫画分卷归档</h3>
+    <label className="flex items-center gap-2 text-sm">
+      <input type="checkbox" role="switch" className="accent-accent" checked={options.enabled}
+        disabled={busy} onChange={(event) => setOptions({ ...options, enabled: event.target.checked })} />
+      按单行本建立子目录
+    </label>
+    <p className="text-xs text-ink-soft">新归档使用「作品／第 N 卷／章节 CBZ」，待确认章节进入「未分卷」。Komga 自动刮削和刷新使用刮削设置页的开关。</p>
+    <fieldset disabled={busy} className="flex flex-wrap gap-3 text-xs">
+      <legend className="mb-2 font-semibold">卷目录来源</legend>
+      {catalogSources.map(([source, label]) => <label key={source} className="flex items-center gap-1.5">
+        <input type="checkbox" className="accent-accent" checked={options.sources.includes(source)} onChange={() => toggle(source)} />
+        {label}
+      </label>)}
+    </fieldset>
+    {options.sources.includes('opentome') && <p className="text-xs text-ink-soft">OpenTomeDB 由服务端挂载 SQLite 文件后可用。</p>}
+    {error && <p role="alert" className="text-xs text-negative">{error}</p>}
+    <Button size="sm" variant="primary" loading={busy} disabled={busy || !changed} onClick={() => void save()}>保存漫画归档设置</Button>
+  </section>
 }
 
 function FolderPicker({ kind, label, saved, reload }: { kind: Kind; label: string; saved: FolderSettings; reload: () => void }) {

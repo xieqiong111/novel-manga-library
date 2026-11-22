@@ -39,6 +39,7 @@ The unprefixed `SUWAYOMI_URL`, `SUWAYOMI_USERNAME`, `SUWAYOMI_PASSWORD`, and `SU
 | `manga_sources` | List installed Suwayomi sources. |
 | `manga_subscribe` | Set Suwayomi's `inLibrary` flag for one manga. |
 | `manga_komga_download` | Submit explicit chapter IDs for automatic CBZ export. |
+| `manga_volume_catalog` | Find a manga edition by ISBN, find official publisher pages, and verify the chapter contents of a volume through Studio. |
 | `manga_komga_status` | Check eligible chapters, progress, and confirmed CBZ files. |
 | `studio_read` | Query Studio libraries and task or archive status with a scoped read-only key. |
 

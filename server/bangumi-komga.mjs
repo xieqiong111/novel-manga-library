@@ -401,12 +401,54 @@ export function createBangumiKomga({ url, requestMetadata, komga, getOptions, ge
     return apply({ previewId: planned.previewId }, ensureCurrent)
   }
 
+  async function autoVolume({ libraryId, seriesId, subjectId: volumeId, title }, ensureCurrent, connection) {
+    if (!subjectId(volumeId) || !text(title, 300)) {
+      throw new MetadataError(400, 'INVALID_VOLUME_SUBJECT', '未确认该卷的 Bangumi 条目。')
+    }
+    const client = komga()
+    const target = await client.metadataTarget('series', seriesId)
+    ensureCurrent()
+    if (target.libraryId !== libraryId) throw new MetadataError(409, 'METADATA_CHANGED', '单行本已移出所选书库。')
+    const options = preferences()
+    checkLibrary(libraryId, options.libraries, 'manga')
+    const data = await adapter('volume-detail', { kind: 'manga', scope: 'book', subjectId: volumeId,
+      includeCover: options.seriesCover }, connection)
+    const subject = candidate(data.subject)
+    if (subject.id !== volumeId || !object(data.metadata)) {
+      throw new MetadataError(502, 'INVALID_METADATA_RESPONSE', 'Bangumi 返回的单行本条目与请求不符。')
+    }
+    const input = { ...data.metadata, title }
+    if (japaneseText(text(input.summary, 20000))) delete input.summary
+    const patch = changes(target.metadata, input, 'series', { ...subject, nameCn: title }, options)
+    if (patch.title) patch.titleLock = true
+    const cover = options.seriesCover ? await previewCover(client, 'series', seriesId, data) : null
+    ensureCurrent()
+    if (Object.keys(patch).length) {
+      const current = await client.metadataTarget('series', seriesId)
+      if (current.libraryId !== libraryId || fingerprint(current.metadata, patch, true) !== fingerprint(target.metadata, patch, true)) {
+        throw new MetadataError(409, 'METADATA_CHANGED', 'Komga 单行本元数据已改变。')
+      }
+      ensureCurrent()
+      await client.patchMetadata('series', seriesId, patch)
+      ensureCurrent()
+    }
+    const coverResult = cover?.status === 'pending' ? await applyCover(client, 'series', seriesId, data.coverUrl, fetchCover) : cover
+    return { updated: Object.keys(patch).length > 0 || coverResult?.status === 'applied', cover: coverResult,
+      subjectId: volumeId, isbn: typeof data.isbn === 'string' ? data.isbn : null, date: subject.date || null,
+      summary: subject.summary || null, ...provenance(data) }
+  }
+
   return async function run(action, body, ensureCurrent, connection) {
     if (!url && !requestMetadata) throw new MetadataError(503, 'BANGUMIKOMGA_UNCONFIGURED', '尚未启用 BangumiKomga 服务。')
     if (active >= 4) throw new MetadataError(429, 'METADATA_BUSY', '元数据服务繁忙，请稍后重试。')
     active += 1
     try {
       if (action === 'identity') return await identity(body)
+      if (action === 'related-volumes' || action === 'volume-detail') {
+        if (!subjectId(body.subjectId)) throw new MetadataError(400, 'INVALID_SUBJECT_ID', '漫画条目 ID 无效。')
+        return await adapter(action, { kind: 'manga', scope: action === 'related-volumes' ? 'series' : 'book',
+          subjectId: body.subjectId, ...(body.includeCover ? { includeCover: true } : {}) }, connection)
+      }
       if (action === 'books') {
         const page = body.page ?? 0
         if (!komgaId(body.seriesId) || !Number.isInteger(page) || page < 0 || page > 10000) {
@@ -422,6 +464,7 @@ export function createBangumiKomga({ url, requestMetadata, komga, getOptions, ge
       }
       if (action === 'apply') return await apply(body)
       if (action === 'preview') return await preview(body)
+      if (action === 'auto-volume') return await autoVolume(body, ensureCurrent, connection)
       if (action === 'auto-series') return await autoSeries(body, ensureCurrent, connection)
       return await search(body)
     } finally {

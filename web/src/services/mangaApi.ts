@@ -40,6 +40,20 @@ const liveMangaApi = {
 
 export const mangaApi: typeof liveMangaApi = IS_LIVE ? liveMangaApi : mangaMock
 
+export interface MangaVolumeCatalog {
+  enabled: boolean
+  sources: string[]
+  bound: boolean
+  openTomeConfigured: boolean
+  volumes: { number: number; chapters: string[]; source: string; url: string; confirmed: boolean; conflict?: boolean }[]
+  volumeMetadata: { number: number; subjectId: number; isbn?: string; date?: string }[]
+}
+export const mangaVolumeApi = {
+  get: (id: string) => apiFetch<MangaVolumeCatalog>(mangaPath(id) + '/volume-catalog'),
+  resolve: (id: string, action: 'resolve' | 'opentome', volume?: number) =>
+    apiFetch<MangaVolumeCatalog>(mangaPath(id) + '/volume-catalog', jsonPost({ action, volume })),
+}
+
 export async function chaptersForVolumeView(id: string) {
   const chapters = new Map<string, MangaChapter>()
   let offset = 0

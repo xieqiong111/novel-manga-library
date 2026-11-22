@@ -29,6 +29,7 @@
 | `novel_tasks` | `GET /api/tasks/:id` | 查看实际进度，完成后从 `artifacts[].downloadPath` 下载 EPUB |
 | `novel_library` | `GET /api/library/:id`、`POST /api/library/:id/verify` | 核对单个 EPUB 的校验结果 |
 | `manga_download` 或 `manga_komga_download` | `POST /api/manga/:id/komga`，`chapterIds` 为漫画源返回的章节 ID | 保留作品 ID 和选中的章节 ID |
+| `manga_volume_catalog` | `GET/POST /api/manga/:id/volume-catalog` | 获取卷目录、按 ISBN 查找或核验出版社章节目录 |
 | `manga_tasks` 和 `manga_komga_status` | `GET /api/manga/downloads?mangaId=:id`、`GET /api/manga/:id/komga` | 分别查看下载队列、CBZ 文件及 Komga 后续处理状态 |
 
 如果提交时 Studio 连接中断，先从任务列表核对服务是否已经接单。托管模式遇到配置或连接错误时会返回明确的错误，DSH 等待 Studio 恢复后再处理。

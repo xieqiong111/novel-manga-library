@@ -5,7 +5,43 @@
 - 每章下载完成后自动生成一个 CBZ。带卷号的分话也逐章生成，无需等待同卷的其他章节。
 - 例如 `第001话 [7350].cbz`。末尾是 Suwayomi 章节 ID，可区分同话的不同版本。无话号的独立章节用 `章节 [7350].cbz`。
 - 来源若只提供整卷条目，须换成提供分话的来源。旧卷包保留，已在旧卷包中的章节不会自动再写一份。
-- CBZ 直接写入所选漫画目录下以作品名命名的文件夹。来源与作品 ID 保存在隐藏标记中。同名冲突时以来源和作品 ID 区分目录。
+- 默认写入所选漫画目录下的作品文件夹。开启分卷归档后，新 CBZ 可放入该作品的单行本子目录。来源与作品 ID 保存在隐藏标记中。
+
+## 可选分卷归档
+
+在「系统设置 → NAS 保存目录 → 漫画分卷归档」打开「按单行本建立子目录」，并选择目录来源。可以随时关闭。已归档的文件继续以原位置提供，切换设置不会迁移或重复打包它们。
+
+```text
+漫画/
+└── 为美好的世界献上祝福！/
+    ├── 第01卷/
+    │   ├── 第001话 [7350].cbz
+    │   └── 第002话 [7351].cbz
+    ├── 第02卷/
+    │   └── 第006话 [7355].cbz
+    └── 未分卷/
+        └── 第141话 [7490].cbz
+```
+
+Studio 先绑定 Bangumi 漫画系列和 Suwayomi 的确切来源与作品。出版社目录和已核对的参考目录可供匹配。配置 OpenTomeDB 后，Studio 可以用 Bangumi 单行本的确切 ISBN 匹配该版本。重复话号、无法确认的拆话、缺少目录和冲突列入「未分卷」。
+
+在「刮削设置」打开「下载后刷新」和「Komga 收录后自动刮削」，按需启用系列封面。Komga 扫描到卷目录和该 CBZ 后，Studio 用该卷的 Bangumi 「单行本」条目刮削元数据，并将卷按序加入以作品名命名的收藏集。其他作品缺少卷条目时，任务记录会显示原因。中文显示名沿用作品的 Bangumi 中文标题和卷号。卷的 ISBN 与出版日期留在 Studio，Komga 系列支持标题、简介、链接和封面。
+
+在漫画详情选择「按单行本查看」后，可以查询 Bangumi 单行本，或用选中卷的 ISBN 查询已配置的 OpenTomeDB。OpenTomeDB 官方 SQLite 可以放入 Studio 的数据目录，配置 `LN_OPENTOME_SQLITE=/data/manga-metadata.sqlite` 并重启 Studio。数据库以只读方式打开。数据许可和来源见 [OpenTomeDB](https://opentomedb.com/data/)。
+
+《为美好的世界献上祝福！》示例的正篇目录使用 [第 1–20 卷参考目录](https://it.wikipedia.org/wiki/Capitoli_di_Konosuba!_-_This_Wonderful_World) 和 [第 21 卷出版社试读](https://yenpress.com/titles/9798855433692-konosuba-god-s-blessing-on-this-wonderful-world-vol-21-manga)。第 22–23 卷的 [参考话号](https://konosuba.fandom.com/wiki/Category:Konosuba_Chapters) 目前标为待核验。
+
+### 卷目录 API
+
+| 请求 | 用途 |
+| --- | --- |
+| `GET /api/manga/:id/volume-catalog` | 查看来源、目录、核验状态和 Bangumi 单行本 |
+| `POST /api/manga/:id/volume-catalog` ，`action: "resolve"` | 绑定作品并载入参考目录与关联单行本 |
+| 同上，`action: "opentome", volume: 1` | 用指定卷的 Bangumi ISBN 匹配 SQLite 版本 |
+| 同上，`action: "search-publisher", volume: 21` | 查找 Yen Press 和 KADOKAWA 的官方候选页面 |
+| 同上，`action: "verify-publisher", volume: 21, publisherUrl: "…"` | 验证官网页面与卷号、作品或 ISBN，并保存明确的试读章节目录 |
+
+数据不足的发布页面返回 `no-publisher-contents`。日期、ISBN 和卷号存在时，仍需单独的逐话目录才能分卷。Agent 使用 Studio 任务密钥和 `manga_volume_catalog`，可先查找官网，再验证候选页面。
 
 ## Studio 按章下载
 
@@ -23,7 +59,7 @@
 
 ## Docker 部署
 
-用现有 Suwayomi 实例的 Docker 网络。创建专用输出目录，例如 Komga 已扫描的漫画目录，让归档容器运行用户可写且让 Komga 可读。NAS 上可以让这两个容器使用同一 UID/GID。Docker 归档容器仅挂载此子目录，认证 JSON 以只读方式挂载。认证文件需要运行用户能读取，建议权限 `0600`，无需提交到仓库。可以复用 DSH 的连接 JSON，文件字段为 `LN_SUWAYOMI_URL`，若 Suwayomi 启用了 Basic 认证，再填写 `LN_SUWAYOMI_USERNAME` 和 `LN_SUWAYOMI_PASSWORD`。URL 应为容器可访问的 HTTP(S) origin，例如 `http://suwayomi:4567`。
+用现有 Suwayomi 实例的 Docker 网络。创建专用输出目录，例如 Komga 已扫描的漫画目录，让归档容器运行用户可写且让 Komga 可读。让 Studio 和归档容器使用相同的 UID/GID，以读取共享设置和卷目录。现有部署若曾以 UID 1000 运行，请沿用已配置的 UID/GID，并核对挂载文件所有者。Docker 归档容器仅挂载此子目录，认证 JSON 以只读方式挂载。认证文件需要运行用户能读取，建议权限 `0600`，无需提交到仓库。可以复用 DSH 的连接 JSON，文件字段为 `LN_SUWAYOMI_URL`，若 Suwayomi 启用了 Basic 认证，再填写 `LN_SUWAYOMI_USERNAME` 和 `LN_SUWAYOMI_PASSWORD`。URL 应为容器可访问的 HTTP(S) origin，例如 `http://suwayomi:4567`。
 
 将以下变量写入本地 `.env` 或通过运行环境传入。
 
@@ -31,8 +67,8 @@
 SUWAYOMI_VOLUME_NETWORK=dsh-lightnovel-net
 SUWAYOMI_VOLUME_CONNECTION_FILE=/path/to/suwayomi.json
 SUWAYOMI_VOLUME_OUTPUT_DIR=/path/to/komga/manga
-SUWAYOMI_VOLUME_UID=1000
-SUWAYOMI_VOLUME_GID=1000
+SUWAYOMI_VOLUME_UID=1001
+SUWAYOMI_VOLUME_GID=1001
 ```
 
 ```sh
@@ -40,7 +76,7 @@ docker compose --env-file .env -f docker/volume-cbz/compose.yml up -d
 docker compose --env-file .env -f docker/volume-cbz/compose.yml logs volume-cbz
 ```
 
-在 Studio 的环境变量中设置 `LN_VOLUME_ARCHIVE_URL=http://suwayomi-volume-cbz:8788`。Studio 与归档服务需加入同一个内部 Docker 网络，归档状态端口无需对宿主机发布。
+在 Studio 的环境变量中设置 `LN_VOLUME_ARCHIVE_URL=http://suwayomi-volume-cbz:8788`。Studio 与归档服务需加入同一个内部 Docker 网络，归档状态端口无需对宿主机发布。升级现有实例时，使用 `docker compose -f docker-compose.web.yml up -d --build web` 更新内置 BangumiKomga，再重启归档容器。
 
 首次启动会检查已下载的章节。停止归档服务后，已经生成的 CBZ 仍可阅读。`DOWNLOAD_AS_CBZ` 是 Suwayomi 自己的单话打包设置，归档支持 Suwayomi 以图片目录或 CBZ 保存的下载。
 

@@ -2,6 +2,7 @@
 """Export one CBZ per completed Suwayomi manga chapter."""
 
 import argparse
+from collections import Counter
 import base64
 from contextlib import closing, contextmanager
 from decimal import Decimal
@@ -206,7 +207,7 @@ class Suwayomi:
 
     def downloaded_mangas(self):
         return {row["manga"]["id"]: row["manga"] for row in self.chapters(
-            {"query": "isDownloaded: true"}, "manga { id title sourceId }"
+            {"query": "isDownloaded: true"}, "manga { id title sourceId url realUrl }"
         )}
 
     def manga(self, manga_id):
@@ -358,13 +359,17 @@ def prepare_series_folder(folder, manga):
             raise ArchiveError("existing folder belongs to a different series")
 
 
-def comic_info(manga, title, number, page_count):
+def comic_info(manga, title, number, page_count, volume=None):
     info = ElementTree.Element("ComicInfo")
     for tag, value in [("Series", manga.get("bangumi", {}).get("title", manga["title"])), ("Title", title),
                        ("Number", number), ("PageCount", str(page_count))]:
         ElementTree.SubElement(info, tag).text = value
+    if volume:
+        ElementTree.SubElement(info, "Volume").text = str(volume["number"])
     if "bangumi" in manga:
-        ElementTree.SubElement(info, "Web").text = f"https://bgm.tv/subject/{manga['bangumi']['subjectId']}"
+        subject_id = volume.get("subjectId") if volume else None
+        subject_id = subject_id or manga["bangumi"]["subjectId"]
+        ElementTree.SubElement(info, "Web").text = f"https://bgm.tv/subject/{subject_id}"
     return ElementTree.tostring(info, encoding="utf-8", xml_declaration=True)
 
 
@@ -441,8 +446,95 @@ def archive_path(directories, filename):
     return directories[0] / filename
 
 
-def archive_status(directories, filename, selected, failed):
-    destination = archive_path(directories, filename)
+def volume_preferences(settings):
+    if not settings:
+        return False, []
+    try:
+        with settings.open("rb") as handle:
+            value = json.loads(handle.read(65536)).get("mangaArchive", {})
+    except FileNotFoundError:
+        return False, []
+    sources = value.get("sources", ["publisher", "reference", "opentome"])
+    return value.get("enabled") is True, sources if isinstance(sources, list) else []
+
+
+def volume_assignments(settings, manga, chapters, preferences):
+    enabled, sources = preferences
+    binding = manga.get("bangumi")
+    if not enabled or not binding or not settings:
+        return {}
+    location = settings.parent / "manga-volume-catalogs" / f'{int(manga["id"])}.json'
+    if location.parent.is_symlink() or location.is_symlink():
+        raise ArchiveError("invalid manga volume catalog")
+    try:
+        with location.open("rb") as handle:
+            record = json.loads(handle.read(256001))
+    except FileNotFoundError:
+        return {}
+    url = urlsplit(manga.get("realUrl") or manga.get("url") or "")
+    work = f"{url.scheme}://{url.netloc}{url.path.rstrip('/')}"
+    if (record.get("mangaId") != str(manga["id"]) or record.get("sourceId") != str(manga["sourceId"])
+            or record.get("subjectId") != binding["subjectId"] or record.get("workUrl") != work):
+        return {}
+    editions = {row["number"]: row.get("subjectId") for row in record.get("volumeMetadata", [])}
+    mapped = {}
+    for row in record.get("volumes", []):
+        number = row.get("number")
+        if (type(number) is int and 1 <= number <= 9999 and row.get("confirmed") is True
+                and row.get("source") in sources):
+            for chapter in row.get("chapters", []):
+                mapped[chapter] = {"number": number, "subjectId": editions.get(number)} if chapter not in mapped else None
+    standalone = list(standalone_chapters(chapters))
+    counts = Counter(number for number, _ in standalone)
+    assignments = {}
+    for number, row in standalone:
+        match = mapped.get(number)
+        if not match or counts[number] != 1:
+            continue
+        name = row["name"].translate(DIGITS)
+        tagged = VOLUME.match(name)
+        if tagged and int(tagged["cjk"] or tagged["en"]) != match["number"]:
+            continue
+        if re.search(r"[话話章节節回]\s*[-–—_]\s*[0-9]|[话話章节節回]\s*[（(]\s*[0-9]", name):
+            continue
+        assignments[row["id"]] = match
+    return assignments
+
+
+def volume_folder(number):
+    return f"第{number:02}卷" if number else "未分卷"
+
+
+def chapter_locations(directories):
+    existing = {}
+    for directory in directories:
+        if directory.is_symlink() or not directory.is_dir():
+            continue
+        nested = []
+        for child in directory.iterdir():
+            if child.suffix == ".cbz":
+                existing.setdefault(child.name, child)
+            elif (child.name == "未分卷" or re.fullmatch(r"第[0-9]{2,4}卷", child.name)) and (
+                    not child.is_symlink() and child.is_dir()):
+                nested.append(child)
+        for child in sorted(nested):
+            for candidate in child.iterdir():
+                if candidate.suffix == ".cbz":
+                    existing.setdefault(candidate.name, candidate)
+    return existing
+
+
+def chapter_destination(directories, filename, folder, existing):
+    # Preserve previously written layouts across directory and preference changes.
+    if filename in existing:
+        return existing[filename]
+    parent = directories[0] / folder if folder else directories[0]
+    if parent.is_symlink():
+        raise ArchiveError("volume destination is a symbolic link")
+    return parent / filename
+
+
+def archive_status(destination, filename, selected, failed):
     if destination.is_file() and not destination.is_symlink():
         try:
             with ZipFile(destination) as archive:
@@ -456,7 +548,9 @@ def archive_status(directories, filename, selected, failed):
 def legacy_volume_chapters(directories):
     coverage = {}
     for folder in directories:
-        for file in sorted(folder.glob("第*卷.cbz")):
+        nested = sorted(child for child in folder.glob("第*卷")
+                        if re.fullmatch(r"第[0-9]{2,4}卷", child.name) and not child.is_symlink() and child.is_dir())
+        for file in sorted(path for parent in [folder, *nested] for path in parent.glob("第*卷.cbz")):
             if file.is_symlink() or not re.fullmatch(r"第[0-9]{2,4}卷\.cbz", file.name):
                 continue
             try:
@@ -472,7 +566,7 @@ def legacy_volume_chapters(directories):
 
 
 def archive_catalog(client, root, manga_id, previous=(), *, offset=0, limit=20, chapter_ids=None, archive_errors=None,
-                    storage_root=None):
+                    storage_root=None, settings=None):
     manga = client.manga(manga_id)
     if not manga or str(manga["sourceId"]) == "0":
         return {"volumes": [], "archiveMode": "unsupported", "chapters": [], "chapterCount": 0}
@@ -484,15 +578,21 @@ def archive_catalog(client, root, manga_id, previous=(), *, offset=0, limit=20, 
     directories = archive_directories(root, previous, manga)
     legacy = legacy_volume_chapters(directories)
     standalone = list(standalone_chapters(chapters))
+    preferences = volume_preferences(settings)
+    assignments = volume_assignments(settings, manga, chapters, preferences)
+    existing = chapter_locations(directories)
     mode = "chapter" if standalone else "unsupported"
     selected_chapters = ([(number, row) for number, row in standalone if str(row["id"]) in chapter_ids]
                          if chapter_ids is not None else standalone[offset:offset + limit])
     results = []
     for number, row in selected_chapters:
         filename = chapter_filename(number, row["id"])
-        status = archive_status(directories, filename, [row], archive_errors and (manga_id, filename) in archive_errors)
+        volume = assignments.get(row["id"])
+        section = volume_folder(volume["number"] if volume else None) if preferences[0] else None
+        destination = chapter_destination(directories, filename, section, existing)
+        status = archive_status(destination, filename, [row], archive_errors and (manga_id, filename) in archive_errors)
         old_file = legacy.get((row["id"], row["pageCount"]))
-        saved = archive_path(directories, filename) if status["filename"] else old_file
+        saved = destination if status["filename"] else old_file
         if not status["filename"] and old_file:
             status = {"filename": None, "legacyVolume": old_file.name}
         if saved is not None and storage_root is not None:
@@ -565,7 +665,7 @@ def start_status_server(client, root, port, settings=None, archive_errors=None, 
                         return
                     current, previous = storage_roots(root, settings)
                     result = archive_catalog(client, current, int(match[1]), previous,
-                                             archive_errors=archive_errors, storage_root=root, **selection)
+                                             archive_errors=archive_errors, storage_root=root, settings=settings, **selection)
                 else:
                     self.send_error(404)
                     return
@@ -590,8 +690,8 @@ def start_status_server(client, root, port, settings=None, archive_errors=None, 
     return server
 
 
-def write_cbz(client, root, manga, filename, title, number, chapters, directories):
-    destination = archive_path(directories, filename)
+def write_cbz(client, root, manga, filename, title, number, chapters, directories, *, destination=None, volume=None):
+    destination = destination or archive_path(directories, filename)
     folder = destination.parent
     signature = archive_signature(chapters)
     if len(signature) > 65535:
@@ -618,12 +718,23 @@ def write_cbz(client, root, manga, filename, title, number, chapters, directorie
                 page_count = 0
                 for chapter in chapters:
                     page_count += add_chapter_pages(client, output, chapter, page_count + 1)
-                output.writestr("ComicInfo.xml", comic_info(manga, title, number, page_count))
+                output.writestr("ComicInfo.xml", comic_info(manga, title, number, page_count, volume))
                 output.comment = signature
             temporary.flush()
             os.fsync(temporary.fileno())
             staging.chmod(0o600)
-            prepare_series_folder(folder, manga)
+            if folder == directories[0]:
+                prepare_series_folder(folder, manga)
+            elif folder.parent == directories[0]:
+                prepare_series_folder(folder.parent, manga)
+                folder.mkdir(mode=0o700, exist_ok=True)
+                if folder.is_symlink() or not folder.is_dir():
+                    raise ArchiveError("invalid manga volume destination")
+            else:
+                series = next((item for item in directories if folder == item or folder.parent == item), None)
+                if series is None or series.is_symlink() or folder.is_symlink():
+                    raise ArchiveError("invalid previous manga destination")
+                prepare_series_folder(series, manga)
             os.replace(staging, destination)
         finally:
             staging.unlink(missing_ok=True)
@@ -631,7 +742,7 @@ def write_cbz(client, root, manga, filename, title, number, chapters, directorie
     return True
 
 
-def run_once(client, root, previous=(), archive_errors=None, history=None):
+def run_once(client, root, previous=(), archive_errors=None, history=None, settings=None):
     def record_error(key):
         if archive_errors is not None:
             if len(archive_errors) >= CATALOG_LIMIT:
@@ -642,6 +753,7 @@ def run_once(client, root, previous=(), archive_errors=None, history=None):
         if archive_errors is not None:
             archive_errors.pop(key, None)
 
+    preferences = volume_preferences(settings)
     mangas = client.downloaded_mangas()
     failures = 0
     exported = 0
@@ -654,6 +766,8 @@ def run_once(client, root, previous=(), archive_errors=None, history=None):
                 manga = client.archive_identity(manga)
             directories = archive_directories(root, previous, manga)
             legacy = legacy_volume_chapters(directories)
+            assignments = volume_assignments(settings, manga, chapters, preferences)
+            existing = chapter_locations(directories)
             if history:
                 eligible = {row["id"] for _, row in standalone_chapters(completed)}
                 for row in completed:
@@ -669,10 +783,13 @@ def run_once(client, root, previous=(), archive_errors=None, history=None):
                     continue
                 key = (manga_id, filename)
                 try:
-                    destination = archive_path(directories, filename)
+                    volume = assignments.get(row["id"])
+                    section = volume_folder(volume["number"] if volume else None) if preferences[0] else None
+                    destination = chapter_destination(directories, filename, section, existing)
                     if history and not destination.exists():
                         history.remember(manga, row, "waiting_archive")
-                    written = write_cbz(client, root, manga, filename, title, number or '', selected, directories)
+                    written = write_cbz(client, root, manga, filename, title, number or '', selected, directories,
+                                        destination=destination, volume=volume)
                     exported += written
                     if history:
                         history.remember(manga, row, "archived", destination, written)
@@ -751,7 +868,7 @@ def main():
             while True:
                 try:
                     current, previous = storage_roots(args.output, args.settings_file)
-                    failures = run_once(client, current, previous, archive_errors, history)
+                    failures = run_once(client, current, previous, archive_errors, history, args.settings_file)
                 except (ArchiveError, OSError, ValueError, TypeError, KeyError, sqlite3.Error) as exc:
                     logging.error("export scan failed: %s", exc)
                     failures = 1

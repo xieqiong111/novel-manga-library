@@ -2,7 +2,7 @@ services:
   volume-cbz:
     image: ${SUWAYOMI_VOLUME_IMAGE:-python:3.12-slim-bookworm}
     restart: unless-stopped
-    user: "${SUWAYOMI_VOLUME_UID:-1000}:${SUWAYOMI_VOLUME_GID:-1000}"
+    user: "${SUWAYOMI_VOLUME_UID:-${LN_UID:-1001}}:${SUWAYOMI_VOLUME_GID:-${LN_GID:-1001}}"
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]

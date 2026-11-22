@@ -5,6 +5,7 @@ export interface DownloadFolders {
   novelFolder: string | null
   mangaFolder: string
   mangaPrevious: string[]
+  mangaArchive?: { enabled: boolean; sources: string[] }
 }
 
 export function validSubfolder(folder: unknown): folder is string {

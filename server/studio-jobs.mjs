@@ -12,10 +12,10 @@ export function studioJobRoute(method, pathname) {
     '/api/manga/search', '/api/manga/sources', '/api/manga/library', '/api/manga/downloads',
   ].includes(pathname) || /^\/api\/tasks\/(?:dsh:)?task_[a-f0-9]{16}$/.test(pathname) ||
     /^\/api\/library\/lib_[a-f0-9]{16}(?:\/file)?$/.test(pathname) ||
-    /^\/api\/manga\/[1-9]\d{0,9}(?:\/(chapters|komga))?$/.test(pathname)
+    /^\/api\/manga\/[1-9]\d{0,9}(?:\/(chapters|komga|volume-catalog))?$/.test(pathname)
   if (method === 'POST') return ['/api/tasks', '/api/manga/downloads/cancel', '/api/library/verify'].includes(pathname) ||
     /^\/api\/tasks\/task_[a-f0-9]{16}\/(cancel|retry)$/.test(pathname) ||
-    /^\/api\/manga\/[1-9]\d{0,9}\/(komga|subscribe)$/.test(pathname) ||
+    /^\/api\/manga\/[1-9]\d{0,9}\/(komga|subscribe|volume-catalog)$/.test(pathname) ||
     /^\/api\/library\/lib_[a-f0-9]{16}\/verify$/.test(pathname)
   return false
 }

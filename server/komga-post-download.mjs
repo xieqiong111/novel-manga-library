@@ -24,6 +24,16 @@ function within(parent, child) {
   return relative !== '..' && !relative.startsWith('../') && !path.posix.isAbsolute(relative)
 }
 
+async function isVolumeFolder(folder, mangaId, sourceId) {
+  const marker = path.join(path.dirname(folder), '.studio-series.json')
+  try {
+    const stat = await lstat(marker)
+    if (!stat.isFile() || stat.size > 1024) return false
+    const work = JSON.parse(await readFile(marker, 'utf8'))
+    return String(work.mangaId) === mangaId && (!sourceId || String(work.sourceId) === sourceId)
+  } catch { return false }
+}
+
 async function indexedSeries(client, libraryId, target, file) {
   let series
   for (let page = 0; !series; page += 1) {
@@ -42,7 +52,7 @@ export async function openKomgaPostDownload({ settings, archiveHistory, logger, 
   const libraryMount = localPath(settings.mangaStorageLabel || settings.mangaStorageRoot)
   if (!libraryMount || !settings.mangaStorageRoot || !archiveHistory || !settings.config?.dataDir) return null
   const file = path.join(settings.config.dataDir, 'komga-post-download.json')
-  let state = { after: 0, jobs: [] }
+  let state = { after: 0, jobs: [], collections: {} }
   try {
     state = JSON.parse(await readFile(file, 'utf8'))
     if (!Number.isSafeInteger(state.after) || state.after < 0 || !Array.isArray(state.jobs)) {
@@ -51,6 +61,7 @@ export async function openKomgaPostDownload({ settings, archiveHistory, logger, 
   } catch (error) {
     if (error.code !== 'ENOENT') throw error
   }
+  state.collections ??= {}
   let current = null
   let timer
   let stopped = false
@@ -63,7 +74,7 @@ export async function openKomgaPostDownload({ settings, archiveHistory, logger, 
     }
   }
 
-  async function run({ currentKomga, metadata, scan }) {
+  async function run({ currentKomga, metadata, scan, mangaVolumes }) {
     const jobs = new Map(state.jobs.map((job) => [job.folder, job]))
     const configured = preferences()
     const events = await archiveHistory.events(state.after).catch(() => {
@@ -127,25 +138,67 @@ export async function openKomgaPostDownload({ settings, archiveHistory, logger, 
         const series = await indexedSeries(client, library.id, target, targetFile)
         if (!series) throw new MetadataError(409, 'KOMGA_INDEX_PENDING', 'Komga 尚未收录该 CBZ。')
         job.phase = 'scraping'
-        if (options.scrape) {
-          const binding = await readMangaBangumiBinding(settings.config.downloadFoldersFile, job.mangaId)
-          const input = { libraryId: library.id, seriesId: series.id, kind: 'manga', ...(job.mangaId ? { mangaId: job.mangaId } : {}),
-            ...(binding ? { confirmedSubjectId: binding.subjectId } : {}) }
-          let fallback = false
-          let result
+        const binding = await readMangaBangumiBinding(settings.config.downloadFoldersFile, job.mangaId)
+        const leaf = path.posix.basename(job.folder)
+        const numbered = /^第([0-9]{2,4})卷$/.exec(leaf)
+        const nested = (numbered || leaf === '未分卷') && await isVolumeFolder(folder, job.mangaId, binding?.sourceId)
+        const volume = binding && nested && numbered
+        const unknownVolume = nested && !volume
+        const runMetadata = async (task) => {
           try {
-            result = await metadata('auto-series', input, ensureCurrent)
+            return await task()
           } catch (error) {
             if (!connectErrors.has(error?.code) || !settings.integrations?.bangumiArchiveAvailable ||
                 settings.integrations.bangumi?.sourceMode !== 'live') throw error
             ensureCurrent()
-            result = await metadata('auto-series', input, ensureCurrent, { sourceMode: 'archive', accessToken: '', proxyUrl: '' })
-            fallback = true
+            const result = await task({ sourceMode: 'archive', accessToken: '', proxyUrl: '' })
+            return result ? { ...result, fallback: true } : result
           }
+        }
+        if (volume && mangaVolumes) {
+          const number = Number(volume[1])
+          if (options.scrape) {
+            const result = await runMetadata(async (connection) => {
+              const subjectId = await mangaVolumes.volumeSubject(job.mangaId, binding, number, connection)
+              if (!subjectId) return null
+              const result = await metadata('auto-volume', { libraryId: library.id, seriesId: series.id,
+                subjectId, title: binding.title + ' · ' + volume[0] }, ensureCurrent, connection)
+              await mangaVolumes.rememberVolume(job.mangaId, binding, number, result)
+              return result
+            })
+            job.message = result ? 'Komga 已收录，已核对该卷的 Bangumi 元数据。' : 'Komga 已收录。该卷暂无确定的 Bangumi 单行本条目。'
+            if (result?.cover?.status === 'failed') job.message += '封面写入失败。'
+            if (result?.fallback) job.message += '使用了 Bangumi 官方离线档案。'
+          } else {
+            job.message = 'Komga 已收录该卷章节。'
+          }
+          const key = library.id + ':' + job.mangaId
+          const entry = state.collections[key] ?? { volumes: {} }
+          entry.volumes[number] = series.id
+          ensureCurrent()
+          const members = Object.entries(entry.volumes).sort(([left], [right]) => Number(left) - Number(right)).map(([, id]) => id)
+          entry.name ??= binding.title
+          try {
+            entry.id = await client.volumeCollection(entry.name, entry.id, members)
+          } catch (error) {
+            if (error?.code !== 'COLLECTION_CONFLICT' || entry.id || entry.name !== binding.title) throw error
+            entry.name = binding.title + ' [' + binding.sourceId + '-' + job.mangaId + ']'
+            ensureCurrent()
+            entry.id = await client.volumeCollection(entry.name, null, members)
+          }
+          state.collections[key] = entry
+          job.message += ' 已加入作品收藏集。'
+        } else if (unknownVolume) {
+          job.message = 'Komga 已收录。卷号未确认，等待卷目录。'
+        } else if (options.scrape) {
+          const input = { libraryId: library.id, seriesId: series.id, kind: 'manga', ...(job.mangaId ? { mangaId: job.mangaId } : {}),
+            ...(binding ? { confirmedSubjectId: binding.subjectId } : {}) }
+          const result = await runMetadata((connection) => connection ? metadata('auto-series', input, ensureCurrent, connection)
+            : metadata('auto-series', input, ensureCurrent))
           job.message = result.updated ? 'Komga 已收录，元数据已更新。'
             : `Komga 已收录，${result.reason ?? '没有可写入的元数据'}。`
           if (result.cover?.status === 'failed') job.message += '封面写入失败。'
-          if (fallback) job.message += '实时 API 不通，使用了 Bangumi 官方离线档案。'
+          if (result.fallback) job.message += '实时 API 不通，使用了 Bangumi 官方离线档案。'
         } else {
           job.message = 'Komga 已收录该 CBZ。'
         }

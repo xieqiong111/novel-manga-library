@@ -304,6 +304,9 @@ it('routes native novel and manga jobs to Studio, uses its results, and never fa
       case 'POST /api/manga/22/komga':
         expect(JSON.parse(String(init.body))).toEqual({ chapterIds: ['101'], bangumiSubjectId: subjectId, sourceTitle: '其他譯名' })
         return Response.json({ queued: ['101'], queue: [], chapterIds: ['101'] })
+      case 'POST /api/manga/22/volume-catalog':
+        expect(JSON.parse(String(init.body))).toEqual({ action: 'search-publisher', volume: 1 })
+        return Response.json({ status: 'candidates', results: [{ candidates: [{ url: 'https://yenpress.com/fixture' }] }] })
       case 'GET /api/manga/downloads?mangaId=22':
         return Response.json({ queue: [], history: [{ chapterId: '101', archive: { state: 'archived', file: '作品/第1话.cbz' } }] })
       default: throw new Error('Unexpected request')
@@ -324,10 +327,12 @@ it('routes native novel and manga jobs to Studio, uses its results, and never fa
       .toMatchObject({ ok: true, queued: ['101'] })
     expect(await call('manga_tasks', { mangaId: '22' }))
       .toMatchObject({ ok: true, executor: 'studio', history: [{ archive: { file: '作品/第1话.cbz' } }] })
+    expect(await call('manga_volume_catalog', { mangaId: '22', action: 'search-publisher', volume: 1 }))
+      .toMatchObject({ ok: true, status: 'candidates', results: [{ candidates: [{ url: 'https://yenpress.com/fixture' }] }] })
     vi.stubEnv('LN_STUDIO_JOB_TOKEN_FILE', '')
     expect(await call('novel_download', { bookId: 'fixture:star-voyage', volumes: '1' }))
       .toMatchObject({ ok: false, error: { code: 'STUDIO_JOB_UNCONFIGURED', retryable: false } })
-    expect(request).toHaveBeenCalledTimes(9)
+    expect(request).toHaveBeenCalledTimes(10)
     expect(await readdir(path.join(dataDir, 'tasks'))).toEqual(taskFiles)
   } finally {
     vi.unstubAllEnvs()

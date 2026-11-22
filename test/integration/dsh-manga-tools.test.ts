@@ -73,7 +73,7 @@ describe('native manga tools', () => {
     const names = [
       'manga_search', 'manga_details', 'manga_chapters', 'manga_download',
       'manga_tasks', 'manga_library', 'manga_sources', 'manga_subscribe',
-      'manga_komga_status', 'manga_komga_download',
+      'manga_komga_status', 'manga_komga_download', 'manga_volume_catalog',
     ]
     const schemas = ctx.tools.schemas()
     for (const name of names) {

@@ -19,7 +19,8 @@ import { createKomgaClient } from './komga-client.mjs'
 import { isDshReadRoute } from './integrations.mjs'
 import { createKomgaApi } from './komga-api.mjs'
 import { createBangumiKomga, MetadataError } from './bangumi-komga.mjs'
-import { bindMangaTitle, resolveDownloadSubject } from './bangumi-download.mjs'
+import { bindMangaTitle, readMangaBangumiBinding, resolveDownloadSubject } from './bangumi-download.mjs'
+import { createMangaVolumeCatalogApi } from './manga-volume-api.mjs'
 import { createKomgaScanner } from './komga-scan.mjs'
 import { createSavedFileHistory, readDshTasks } from './download-history.mjs'
 import { authorizeStudioJob, isStudioJobCredential, studioJobRoute } from './studio-jobs.mjs'
@@ -132,10 +133,12 @@ export function createApi(
       ? await scan(client, libraryId)
       : { accepted: false, skipped: true, message: '已跳过自动刷新。' },
   })
+  const mangaVolumes = createMangaVolumeCatalogApi({ settings, mangaClient, metadata })
   const handleKomgaMaintenance = createKomgaMaintenance({ settings, currentKomga, metadata, scan })
   const handleMangaApi = createMangaApi(mangaClient, logger, {
     missingBffAuth: settings.mangaCredentialsConfigured && !settings.token && !settings.auth,
     archiveHistory: settings.archiveHistory,
+    mangaVolumes,
     postDownload: settings.postDownload?.status,
     async locateArchive(relativePath) {
       if (!settings.mangaStorageRoot || !validArchiveFile(relativePath)) return null
@@ -147,8 +150,14 @@ export function createApi(
     },
     async bindBangumi(mangaId, id, sourceTitle) {
       const manga = await mangaClient.getManga(mangaId)
-      const subject = await resolveDownloadSubject(metadata, 'manga', [manga.title], id, sourceTitle)
-      await bindMangaTitle(settings.config?.downloadFoldersFile, manga, subject)
+      const existing = await readMangaBangumiBinding(settings.config?.downloadFoldersFile, mangaId)
+      const subject = existing?.sourceId === String(manga.sourceId) && (id === undefined || id === existing.subjectId)
+        ? { id: existing.subjectId, title: existing.title }
+        : await resolveDownloadSubject(metadata, 'manga', [manga.title], id, sourceTitle)
+      if (!existing || existing.subjectId !== subject.id || existing.sourceId !== String(manga.sourceId)) {
+        await bindMangaTitle(settings.config?.downloadFoldersFile, manga, subject)
+      }
+      await mangaVolumes.prepare(manga, { subjectId: subject.id })
       return subject
     },
   })
@@ -174,7 +183,7 @@ export function createApi(
     logger.warn('downloads', 'dsh_history_unavailable')
     return []
   })
-  settings.postDownload?.start({ currentKomga, metadata, scan })
+  settings.postDownload?.start({ currentKomga, metadata, scan, mangaVolumes })
   const handleDownloadFolders = createDownloadFoldersApi(settings, currentKomga, scan)
   const handleKomgaApi = createKomgaApi({
     status: () => currentKomga().status(),

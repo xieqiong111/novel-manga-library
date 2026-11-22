@@ -2,6 +2,10 @@ export interface DownloadFolders {
     novelFolder: string | null;
     mangaFolder: string;
     mangaPrevious: string[];
+    mangaArchive?: {
+        enabled: boolean;
+        sources: string[];
+    };
 }
 export declare function validSubfolder(folder: unknown): folder is string;
 /** Resolve existing directories below an administrator-provided mount without following symlinks. */

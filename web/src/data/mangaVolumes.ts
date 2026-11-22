@@ -1,10 +1,11 @@
 import type { Manga, MangaChapter } from '@/types/manga'
 
 type Citation = { label: string; url: string }
-interface PublishedVolume {
+export interface PublishedVolume {
   number: number
   chapters: readonly string[]
   citation: Citation
+  confirmed?: boolean
 }
 
 // Bind published assignments to an extension and its exact work URL.
@@ -31,7 +32,7 @@ function chapterLabels(name: string) {
   const numbered = chapterAtStart.exec(rest)
   return {
     volume: volume ? Number(volume[1] ?? volume[2]) : null,
-    chapter: numbered ? String(Number(numbered[1])) : null,
+    chapter: numbered && !/[话話章节節回]\s*(?:[-–—_（(])\s*\d/u.test(rest) ? String(Number(numbered[1])) : null,
   }
 }
 
@@ -40,15 +41,16 @@ export interface MangaVolumeGroup {
   chapters: MangaChapter[]
   expected?: readonly string[]
   citation?: Citation
+  confirmed?: boolean
 }
 
-export function mangaVolumeGroups(manga: Manga | null, chapters: MangaChapter[]) {
+export function mangaVolumeGroups(manga: Manga | null, chapters: MangaChapter[], resolved?: PublishedVolume[]) {
   const url = manga?.url && URL.canParse(manga.url) ? new URL(manga.url) : null
-  const catalog = url ? catalogs[`${manga?.sourceId}:${url.hostname}${url.pathname.replace(/\/$/, '')}`] ?? [] : []
+  const catalog = resolved ?? (url ? catalogs[`${manga?.sourceId}:${url.hostname}${url.pathname.replace(/\/$/, '')}`] ?? [] : [])
   const volumes = new Map<number, MangaVolumeGroup>(catalog.map((entry) => [entry.number, {
-    number: entry.number, expected: entry.chapters, citation: entry.citation, chapters: [],
+    number: entry.number, expected: entry.chapters, citation: entry.citation, confirmed: entry.confirmed, chapters: [],
   }]))
-  const assignments = new Map(catalog.flatMap((entry) => entry.chapters.map((chapter) => [chapter, entry.number] as const)))
+  const assignments = new Map(catalog.filter((entry) => entry.confirmed !== false).flatMap((entry) => entry.chapters.map((chapter) => [chapter, entry.number] as const)))
   const labelled = chapters.map((item) => ({ item, ...chapterLabels(item.name) }))
   const count = new Map<string, number>()
   for (const { chapter } of labelled) if (chapter !== null) count.set(chapter, (count.get(chapter) ?? 0) + 1)
@@ -59,7 +61,7 @@ export function mangaVolumeGroups(manga: Manga | null, chapters: MangaChapter[])
     const groupNumber = volume ?? (chapter !== null && count.get(chapter) === 1 ? matched : undefined)
     const group = groupNumber ? volumes.get(groupNumber) : undefined
     if (!groupNumber || chapter === null || (matched !== undefined && matched !== groupNumber)
-        || (group?.expected && !group.expected.includes(chapter))) {
+        || (group?.expected && !group.expected.includes(chapter)) || group?.confirmed === false) {
       unassigned.push(item)
       continue
     }

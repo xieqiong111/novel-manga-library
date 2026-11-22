@@ -71,6 +71,72 @@ class ChapterArchiveTests(unittest.TestCase):
             with self.assertRaises(BangumiFolderConflict):
                 archive_directories(root, [], {**live.archive_identity(manga), "id": 18})
 
+    def test_volume_layout_uses_verified_version_and_keeps_one_cbz_per_chapter(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            settings = root / "config" / "download-folders.json"
+            bindings = settings.parent / "bangumi-manga"
+            bindings.mkdir(parents=True)
+            catalogs = settings.parent / "manga-volume-catalogs"
+            catalogs.mkdir()
+            manga = {"id": 17, "sourceId": "99", "title": "下载源别名",
+                     "url": "manga/main", "realUrl": "https://example.org/manga/main"}
+            binding = {"mangaId": "17", "sourceId": "99", "subjectId": 123, "title": "正式中文名称"}
+            (bindings / "17.json").write_text(json.dumps(binding), encoding="utf-8")
+            record = {**binding, "workUrl": manga["realUrl"], "volumes": [
+                {"number": 1, "chapters": ["1", "2"], "source": "publisher", "confirmed": True},
+                {"number": 2, "chapters": ["3"], "source": "reference", "confirmed": False},
+            ], "volumeMetadata": [{"number": 1, "subjectId": 124}]}
+            (catalogs / "17.json").write_text(json.dumps(record))
+            settings.write_text(json.dumps({"mangaArchive": {"enabled": True, "sources": ["publisher", "reference"]}}))
+            live = Suwayomi({"SUWAYOMI_URL": "http://example.invalid"}, settings)
+            client = FakeSuwayomi()
+            rows = [chapter(3, "第1话"), chapter(4, "第2话-1"), chapter(5, "第3话")]
+            history = DownloadHistory(root)
+            with patch.object(live, "manga", return_value=manga), patch.object(
+                live, "downloaded_mangas", return_value={17: manga}
+            ), patch.object(live, "manga_chapters", return_value=rows), patch.object(
+                live, "chapter_zip", side_effect=client.chapter_zip
+            ):
+                self.assertEqual(run_once(live, root, history=history, settings=settings), 0)
+                catalog = archive_catalog(live, root, 17, storage_root=root, settings=settings)
+                saved = [row["relativeFile"] for row in catalog["chapters"]]
+                self.assertEqual(saved, [
+                    "正式中文名称/第01卷/第001话 [3].cbz",
+                    "正式中文名称/未分卷/第002话 [4].cbz",
+                    "正式中文名称/未分卷/第003话 [5].cbz",
+                ])
+                with ZipFile(root / saved[0]) as archive:
+                    info = ElementTree.fromstring(archive.read("ComicInfo.xml"))
+                    self.assertEqual(info.findtext("Number"), "1")
+                    self.assertEqual(info.findtext("Volume"), "1")
+                    self.assertEqual(info.findtext("Web"), "https://bgm.tv/subject/124")
+                    self.assertEqual(len(archive.namelist()), 4)
+                settings.write_text(json.dumps({"mangaArchive": {"enabled": False, "sources": []}}))
+                self.assertEqual(run_once(live, root, history=history, settings=settings), 0)
+                self.assertEqual(client.calls, [3, 4, 5])
+                self.assertEqual(len(history.events(0)["events"]), 3)
+
+    def test_preserves_legacy_history_for_a_whole_volume_in_a_volume_subfolder(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            client = FakeSuwayomi()
+            manga = {"id": 17, "sourceId": "99", "title": "作品"}
+            row = chapter(3, "第1卷")
+            self.assertTrue(old_volume(client, root, manga, 1, [row]))
+            section = root / "作品" / "第01卷"
+            section.mkdir()
+            (section.parent / "第01卷.cbz").rename(section / "第01卷.cbz")
+            history = DownloadHistory(root)
+            with patch.object(client, "downloaded_mangas", return_value={17: manga}, create=True), patch.object(
+                client, "manga_chapters", return_value=[row], create=True
+            ):
+                self.assertEqual(run_once(client, root, history=history), 0)
+            saved = history.page(None, 10, "17")["history"][0]
+            self.assertEqual(saved["archiveState"], "legacy")
+            self.assertEqual(saved["file"], "作品/第01卷/第01卷.cbz")
+            self.assertEqual(client.calls, [3])
+
     def test_completed_history_survives_restart_and_emits_only_new_exports(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

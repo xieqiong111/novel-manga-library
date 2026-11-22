@@ -22,6 +22,18 @@ async function prepare(page) {
   const submissions = []
   await page.route('**/api/**', async (route) => {
     const target = new URL(route.request().url())
+    if (target.pathname === '/api/manga/3502/volume-catalog') {
+      return route.fulfill({ json: { enabled: true, sources: ['publisher', 'reference'], bound: true, openTomeConfigured: false,
+        volumes: [
+          { number: 1, chapters: ['1', '2', '3', '4', '5'], source: 'publisher', url: 'https://yenpress.com/', confirmed: true },
+          { number: 2, chapters: ['6', '7'], source: 'reference', url: 'https://it.wikipedia.org/', confirmed: false },
+        ],
+        volumeMetadata: [{ number: 1, subjectId: 143034, isbn: '9784040705392', date: '2015-04-09' }],
+      } })
+    }
+    if (target.pathname === '/api/manga/3503/volume-catalog') {
+      return route.fulfill({ json: { enabled: true, sources: ['publisher'], bound: false, volumes: [], volumeMetadata: [] } })
+    }
     const match = /^\/api\/manga\/(3502|3503)(?:\/(chapters|komga))?$/.exec(target.pathname)
     if (!match) {
       const json = target.pathname === '/api/auth/status' ? { enabled: false } : []
@@ -54,6 +66,11 @@ try {
   await desktop.getByRole('checkbox', { name: '第 105 话', exact: true }).waitFor()
   await desktop.getByRole('button', { name: '按单行本查看' }).click()
   await desktop.getByText(/已匹配源站 5\/5 话/).waitFor()
+  assert.equal(await desktop.getByRole('link', { name: 'Bangumi 单行本' }).getAttribute('href'), 'https://bgm.tv/subject/143034')
+  await desktop.getByRole('combobox', { name: '选择单行本' }).selectOption('2')
+  await desktop.getByText('第 2 卷参考目录待确认，暂不自动归卷。').waitFor()
+  assert.equal(await desktop.getByRole('checkbox').count(), 0)
+  await desktop.getByRole('combobox', { name: '选择单行本' }).selectOption('1')
   assert.deepEqual(await desktop.getByRole('checkbox').evaluateAll((items) => items.map(
     (item) => item.getAttribute('aria-label'),
   )), ['第 1 话', '第 2 话', '第 3 话', '第 4 话', '第 5 话'])
@@ -73,6 +90,28 @@ try {
   assert.equal(await mobile.getByRole('checkbox').count(), 1)
   assert.equal(await mobile.getByRole('combobox', { name: '选择单行本' }).locator('option[value="1"]').count(), 0)
   assert.equal(await mobile.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true)
+  let savedArchive = { enabled: false, sources: ['publisher', 'reference', 'opentome'] }
+  const settings = await browser.newPage({ viewport: { width: 390, height: 844 } })
+  await settings.route('**/api/**', async (route) => {
+    const target = new URL(route.request().url())
+    if (target.pathname.endsWith('/download-folders/manga-archive')) savedArchive = route.request().postDataJSON()
+    if (target.pathname.includes('/download-folders')) return route.fulfill({ json: {
+      novel: { enabled: false, root: null, folder: null },
+      manga: { enabled: true, root: '/manga', folder: '', archive: savedArchive },
+    } })
+    if (target.pathname === '/api/status') return route.fulfill({ json: { ok: true, dart: { available: true }, features: {} } })
+    return route.fulfill({ json: target.pathname.endsWith('/auth/status') ? { enabled: false } : [] })
+  })
+  await settings.goto(base + '/#/settings')
+  await settings.getByRole('switch', { name: '按单行本建立子目录' }).check()
+  await settings.getByRole('checkbox', { name: 'OpenTomeDB 本地目录' }).uncheck()
+  await settings.getByRole('button', { name: '保存漫画归档设置' }).click()
+  await settings.getByText('漫画归档设置已保存').waitFor()
+  await settings.reload()
+  await settings.getByRole('switch', { name: '按单行本建立子目录' }).waitFor()
+  assert.equal(await settings.getByRole('switch', { name: '按单行本建立子目录' }).isChecked(), true)
+  assert.equal(await settings.getByRole('checkbox', { name: 'OpenTomeDB 本地目录' }).isChecked(), false)
+  assert.equal(await settings.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true)
   console.log('PASS desktop and mobile volume grouping, paginated lookup, version isolation and chapter-only enqueue')
 } finally {
   await browser.close()

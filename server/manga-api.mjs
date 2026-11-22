@@ -98,7 +98,7 @@ function requiredId(value, field) {
  * the shared LN_BFF_TOKEN check before dispatching to this handler.
  */
 export function createMangaApi(client, logger = { warn() {} },
-  { missingBffAuth = false, getVolumes, archiveHistory = createMangaArchiveHistory(), postDownload, bindBangumi, locateArchive } = {}) {
+  { missingBffAuth = false, getVolumes, archiveHistory = createMangaArchiveHistory(), mangaVolumes, postDownload, bindBangumi, locateArchive } = {}) {
   const komga = createMangaKomga(client, getVolumes)
   const requestBuckets = new Map()
   async function withLocation(item, relativeFile = item.relativeFile) {
@@ -138,6 +138,13 @@ export function createMangaApi(client, logger = { warn() {} },
       else if (segments[0] === 'search') limitRequest(req, 'search', 10)
       else if (segments.length === 2 && segments[1] === 'cover') limitRequest(req, 'cover', 200)
       else limitRequest(req, 'read', 120)
+
+      if (mangaVolumes && segments.length === 2 && segments[1] === 'volume-catalog') {
+        const mangaId = requiredId(segments[0], 'mangaId')
+        sendJson(res, 200, method === 'GET' ? await mangaVolumes.get(mangaId)
+          : await mangaVolumes.update(mangaId, await readJson(req)))
+        return true
+      }
 
       if (method === 'GET' && segments.length === 1 && segments[0] === 'health') {
         sendJson(res, 200, await client.health())
@@ -216,6 +223,7 @@ export function createMangaApi(client, logger = { warn() {} },
           throw new MangaApiError(400, 'INVALID_CHAPTERS', 'chapterIds must contain 1 to 50 IDs')
         }
         const chapterIds = body.chapterIds.map((id) => requiredId(id, 'chapterId'))
+        if (await mangaVolumes?.isEnabled()) await bindBangumi(mangaId, body.bangumiSubjectId, body.sourceTitle)
         sendJson(res, 200, await client.download({ mangaId, chapterIds }))
         return true
       }
@@ -248,7 +256,7 @@ export function createMangaApi(client, logger = { warn() {} },
           } else {
             const { volume, chapterIds, bangumiSubjectId, sourceTitle } = await readJson(req)
             if (volume !== undefined) throw new MangaApiError(409, 'VOLUME_DOWNLOAD_DISABLED', '漫画下载现按章进行，请使用章节 ID。')
-            const name = jobsCredential || bangumiSubjectId !== undefined
+            const name = jobsCredential || bangumiSubjectId !== undefined || await mangaVolumes?.isEnabled()
               ? () => bindBangumi(mangaId, bangumiSubjectId, sourceTitle) : undefined
             const result = await komga.downloadChapters(mangaId, chapterIds, name)
             result.archived = await Promise.all(result.archived.map((chapter) => withLocation(chapter)))

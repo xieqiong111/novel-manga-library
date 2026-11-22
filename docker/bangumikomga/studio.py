@@ -20,7 +20,7 @@ from pypinyin import Style, slug
 from zhconv import convert
 
 from api.bangumi_api import BangumiArchiveDataSource
-from api.bangumi_model import SubjectPlatform
+from api.bangumi_model import BangumiBaseType, SubjectPlatform, SubjectRelation
 from bangumi_archive.local_archive_searcher import parse_infobox
 from core.process_metadata import set_komga_book_metadata, set_komga_series_metadata
 from corpus.vocabulary import ALL_PUBLISHERS
@@ -221,6 +221,9 @@ def metadata(bangumi, subject_id, kind, scope, options):
             if publisher:
                 patch["localVersion"] = publisher
     result = {"subject": candidate(subject), "metadata": patch, **bangumi.provenance}
+    if options.get("includeVolumeFields"):
+        result["isbn"] = next((entry.get("value") for entry in subject.get("infobox", [])
+                               if entry.get("key", "").lower() in ("isbn", "isbn-13")), None)
     if result["source"] == "bangumi-live" and options.get("includeCover"):
         images = subject.get("images") or {}
         result["coverUrl"] = images.get("large") or images.get("common")
@@ -251,6 +254,16 @@ def dispatch(bangumi, operation, params):
         if not 1 <= len(query) <= 200:
             raise ApiError(400, "INVALID_QUERY", "请输入 1 至 200 个字符。")
         return search(bangumi, query, kind, scope)
+    if operation in ("related-volumes", "volume-detail"):
+        subject_id = params.get("subjectId")
+        if kind != "manga" or type(subject_id) is not int or not 1 <= subject_id <= 9999999999:
+            raise ApiError(400, "INVALID_SUBJECT_ID", "请填写有效的漫画条目 ID。")
+        if operation == "related-volumes":
+            return {"volumes": [candidate(row) for row in bangumi.get_related_subjects(subject_id)
+                                if SubjectRelation.parse(row.get("relation")) == SubjectRelation.OFFPRINT
+                                and BangumiBaseType.parse(row.get("type")) == BangumiBaseType.BOOK],
+                    **bangumi.provenance}
+        return metadata(bangumi, subject_id, "manga", "book", {**params, "includeVolumeFields": True})
     if operation == "metadata":
         subject_id = params.get("subjectId")
         if type(subject_id) is not int or not 1 <= subject_id <= 9999999999:

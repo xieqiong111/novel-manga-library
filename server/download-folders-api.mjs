@@ -6,6 +6,7 @@ import { folderWithin, readDownloadFolders, validSubfolder } from '../dist/core/
 import { atomicWriteJson } from '../dist/util/json.js'
 import { KomgaError } from './komga-client.mjs'
 import { createKomgaScanner } from './komga-scan.mjs'
+import { mangaVolumePreferences, volumeSources } from './manga-volume-catalog.mjs'
 
 const base = '/api/settings/download-folders'
 const legacyMangaSeriesName = / \[-?\d+-\d+\]$/
@@ -72,7 +73,8 @@ export function createDownloadFoldersApi(settings, getKomga, scan = createKomgaS
     const saved = filename ? await readDownloadFolders(filename) : { novelFolder: null, mangaFolder: '' }
     return {
       novel: { enabled: Boolean(filename && roots.novel), root: labels.novel ?? null, folder: saved.novelFolder, legacyFolder: config?.libraryDir },
-      manga: { enabled: Boolean(filename && roots.manga), root: labels.manga ?? null, folder: saved.mangaFolder },
+      manga: { enabled: Boolean(filename && roots.manga), root: labels.manga ?? null, folder: saved.mangaFolder,
+        archive: mangaVolumePreferences(saved.mangaArchive) },
     }
   }
 
@@ -139,6 +141,22 @@ export function createDownloadFoldersApi(settings, getKomga, scan = createKomgaS
     return folders()
   }
 
+  async function saveArchive(input) {
+    requireMount('manga')
+    if (typeof input?.enabled !== 'boolean' || !Array.isArray(input.sources) ||
+        input.sources.length > volumeSources.length || input.sources.some((source) => !volumeSources.includes(source))) {
+      throw new FolderError(400, 'INVALID_MANGA_ARCHIVE', '请选择有效的漫画归档方式与卷目录来源。')
+    }
+    const save = pending.then(async () => {
+      const saved = await readDownloadFolders(filename)
+      saved.mangaArchive = mangaVolumePreferences(input)
+      await atomicWriteJson(filename, saved)
+    })
+    pending = save.catch(() => undefined)
+    await save
+    return folders()
+  }
+
   async function komgaChoices(kind) {
     requireMount(kind)
     const client = getKomga()
@@ -155,7 +173,7 @@ export function createDownloadFoldersApi(settings, getKomga, scan = createKomgaS
   }
 
   return async (req, res, url) => {
-    if (![base, base + '/browse', base + '/komga'].includes(url.pathname)) return false
+    if (![base, base + '/browse', base + '/komga', base + '/manga-archive'].includes(url.pathname)) return false
     const isKomga = url.pathname === base + '/komga'
     try {
       if (isKomga ? !settings.auth?.sessionAllowed(req) : !settings.auth && !settings.token) {
@@ -176,6 +194,11 @@ export function createDownloadFoldersApi(settings, getKomga, scan = createKomgaS
       } else if (req.method === 'POST' && url.pathname === base) {
         const { kind, folder, create } = await readBody(req)
         reply(res, 200, await saveFolder(kind, folder, create))
+      } else if (req.method === 'POST' && url.pathname === base + '/manga-archive') {
+        if (settings.auth ? !settings.auth.sessionAllowed(req) : !settings.token) {
+          throw new FolderError(403, 'ADMIN_REQUIRED', '请登录管理员账号后操作。')
+        }
+        reply(res, 200, await saveArchive(await readBody(req)))
       } else if (isKomga && req.method === 'GET') {
         const { entries } = await komgaChoices(url.searchParams.get('kind'))
         reply(res, 200, { libraries: entries, refreshOnSync: refreshOnSync() })

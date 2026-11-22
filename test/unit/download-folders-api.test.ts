@@ -80,10 +80,15 @@ it('persists an authorized library path and reports the real scan acceptance sep
     expect(rejected.body.scan).toMatchObject({ accepted: false, message: expect.stringContaining('管理员权限') })
     expect((await call('GET', '')).body.manga.folder).toBe('收藏')
 
+    const archive = { enabled: true, sources: ['publisher', 'opentome'] }
+    expect((await call('POST', '/manga-archive', archive, false)).status).toBe(403)
+    expect((await call('POST', '/manga-archive', { enabled: true, sources: ['unknown'] })).status).toBe(400)
+    expect((await call('POST', '/manga-archive', archive)).body.manga.archive).toEqual(archive)
+    expect((await call('GET', '')).body.manga).toMatchObject({ folder: '收藏', archive })
     preferences.refreshMode = 'manual'
     expect((await call('GET', '/komga?kind=manga')).body.refreshOnSync).toBe(false)
     const noScan = await call('POST', '/komga', { kind: 'manga', action: 'sync', libraryId: 'other' })
-    expect(noScan.body).toMatchObject({ folders: { manga: { folder: '其他' } }, scan: { accepted: false, skipped: true } })
+    expect(noScan.body).toMatchObject({ folders: { manga: { folder: '其他', archive } }, scan: { accepted: false, skipped: true } })
     expect(fetchImpl.mock.calls.some(([url]) => url.endsWith('/other/scan'))).toBe(false)
     const manual = await call('POST', '/komga', { kind: 'manga', action: 'scan', libraryId: 'other' })
     expect(manual.body.scan).toMatchObject({ accepted: true })
