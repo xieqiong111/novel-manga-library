@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { expect, it, vi } from 'vitest'
+import { withBangumiArchiveRecovery } from '../../server/bangumi-komga.mjs'
 import { createMangaVolumeCatalogApi } from '../../server/manga-volume-api.mjs'
 import { mergeVolumeSources } from '../../server/manga-volume-catalog.mjs'
 import { readPublisherVolume } from '../../server/manga-publisher.mjs'
@@ -74,4 +75,16 @@ it('uses OpenTomeDB only after an exact volume ISBN resolves a unique manga edit
     })
     expect(() => openTomeVolumes(filename, '9784040705392', 2)).toThrow(/ISBN/)
   } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+it('uses the official local Bangumi archive after a live proxy outage', async () => {
+  const result = { volumes: [{ id: 123, name: '漫画 (1)' }], source: 'bangumi-archive' }
+  const upstream = vi.fn().mockRejectedValueOnce(Object.assign(new Error('proxy failed'), { code: 'BANGUMI_PROXY_FAILED' }))
+    .mockResolvedValueOnce(result).mockRejectedValueOnce(Object.assign(new Error('not found'), { code: 'BANGUMI_NOT_FOUND' }))
+  const metadata = withBangumiArchiveRecovery(upstream, () => ({ bangumiArchiveAvailable: true, bangumi: { sourceMode: 'live' } }))
+  expect(await metadata('related-volumes', { subjectId: 45 })).toEqual(result)
+  expect(upstream.mock.calls[1]).toEqual(['related-volumes', { subjectId: 45 }, undefined,
+    { sourceMode: 'archive', accessToken: '', proxyUrl: '' }])
+  await expect(metadata('related-volumes', { subjectId: 45 })).rejects.toMatchObject({ code: 'BANGUMI_NOT_FOUND' })
+  expect(upstream).toHaveBeenCalledTimes(3)
 })

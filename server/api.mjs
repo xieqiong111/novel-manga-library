@@ -18,7 +18,7 @@ import { validArchiveFile } from './manga-volume-client.mjs'
 import { createKomgaClient } from './komga-client.mjs'
 import { isDshReadRoute } from './integrations.mjs'
 import { createKomgaApi } from './komga-api.mjs'
-import { createBangumiKomga, MetadataError } from './bangumi-komga.mjs'
+import { createBangumiKomga, MetadataError, withBangumiArchiveRecovery } from './bangumi-komga.mjs'
 import { bindMangaTitle, readMangaBangumiBinding, resolveDownloadSubject } from './bangumi-download.mjs'
 import { createMangaVolumeCatalogApi } from './manga-volume-api.mjs'
 import { createKomgaScanner } from './komga-scan.mjs'
@@ -133,7 +133,8 @@ export function createApi(
       ? await scan(client, libraryId)
       : { accepted: false, skipped: true, message: '已跳过自动刷新。' },
   })
-  const mangaVolumes = createMangaVolumeCatalogApi({ settings, mangaClient, metadata })
+  const volumeMetadata = withBangumiArchiveRecovery(metadata, () => settings.integrations)
+  const mangaVolumes = createMangaVolumeCatalogApi({ settings, mangaClient, metadata: volumeMetadata })
   const handleKomgaMaintenance = createKomgaMaintenance({ settings, currentKomga, metadata, scan })
   const handleMangaApi = createMangaApi(mangaClient, logger, {
     missingBffAuth: settings.mangaCredentialsConfigured && !settings.token && !settings.auth,
@@ -153,7 +154,7 @@ export function createApi(
       const existing = await readMangaBangumiBinding(settings.config?.downloadFoldersFile, mangaId)
       const subject = existing?.sourceId === String(manga.sourceId) && (id === undefined || id === existing.subjectId)
         ? { id: existing.subjectId, title: existing.title }
-        : await resolveDownloadSubject(metadata, 'manga', [manga.title], id, sourceTitle)
+        : await resolveDownloadSubject(volumeMetadata, 'manga', [manga.title], id, sourceTitle)
       if (!existing || existing.subjectId !== subject.id || existing.sourceId !== String(manga.sourceId)) {
         await bindMangaTitle(settings.config?.downloadFoldersFile, manga, subject)
       }

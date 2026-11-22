@@ -181,6 +181,25 @@ async function applyCover(client, scope, id, url, fetchCover) {
   }
 }
 
+const archiveRecovery = new Set([
+  'BANGUMI_TIMEOUT', 'BANGUMI_CONNECTION_FAILED', 'BANGUMI_PROXY_FAILED', 'BANGUMI_TLS_FAILED', 'BANGUMIKOMGA_TIMEOUT',
+])
+
+export function withBangumiArchiveRecovery(metadata, getIntegrations) {
+  return async (action, body, ensureCurrent, connection) => {
+    try {
+      return connection
+        ? await metadata(action, body, ensureCurrent, connection)
+        : await metadata(action, body, ensureCurrent)
+    } catch (error) {
+      const active = getIntegrations()
+      if (connection || !archiveRecovery.has(error?.code) || !active?.bangumiArchiveAvailable ||
+          active.bangumi?.sourceMode !== 'live') throw error
+      return metadata(action, body, ensureCurrent, { sourceMode: 'archive', accessToken: '', proxyUrl: '' })
+    }
+  }
+}
+
 export function createBangumiKomga({ url, requestMetadata, komga, getOptions, getBangumiProxy, getManga, scanAfterApply, fetchImpl = fetch }) {
   const preferences = () => getOptions?.() ?? defaultScrapeOptions
   const previews = new Map()
@@ -329,11 +348,11 @@ export function createBangumiKomga({ url, requestMetadata, komga, getOptions, ge
     return { ...type, ...provenance(data), candidates }
   }
 
-  async function identity(body) {
+  async function identity(body, connection) {
     const type = selection({ ...body, scope: 'series' })
     async function subjectDetails(id) {
       if (!subjectId(id)) throw new MetadataError(400, 'INVALID_BANGUMI_ID', '请填写有效的 Bangumi 系列条目 ID。')
-      const data = await adapter('metadata', { ...type, subjectId: id })
+      const data = await adapter('metadata', { ...type, subjectId: id }, connection)
       const subject = candidate(data?.subject)
       if (subject.id !== id || !object(data.metadata)) {
         throw new MetadataError(502, 'INVALID_METADATA_RESPONSE', 'Bangumi 返回的条目与请求不一致。')
@@ -346,7 +365,7 @@ export function createBangumiKomga({ url, requestMetadata, komga, getOptions, ge
     }
     if (body.subjectId !== undefined) return { subject: await subjectDetails(body.subjectId), candidates: [] }
     const key = titleKey(text(body.query, 201))
-    const { candidates } = await search({ ...type, query: body.query }, 0)
+    const { candidates } = await search({ ...type, query: body.query }, 0, connection)
     const exact = candidates.filter(({ name, nameCn }) => [name, nameCn].some((name) => name && titleKey(name) === key))
     if (exact.length === 1) return { subject: await subjectDetails(exact[0].id), candidates }
     if (exact.length > 1) return { subject: null, candidates }
@@ -443,7 +462,7 @@ export function createBangumiKomga({ url, requestMetadata, komga, getOptions, ge
     if (active >= 4) throw new MetadataError(429, 'METADATA_BUSY', '元数据服务繁忙，请稍后重试。')
     active += 1
     try {
-      if (action === 'identity') return await identity(body)
+      if (action === 'identity') return await identity(body, connection)
       if (action === 'related-volumes' || action === 'volume-detail') {
         if (!subjectId(body.subjectId)) throw new MetadataError(400, 'INVALID_SUBJECT_ID', '漫画条目 ID 无效。')
         return await adapter(action, { kind: 'manga', scope: action === 'related-volumes' ? 'series' : 'book',
