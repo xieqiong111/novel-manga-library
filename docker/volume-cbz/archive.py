@@ -211,7 +211,7 @@ class Suwayomi:
         )}
 
     def manga(self, manga_id):
-        return self.graphql("query($id: Int!) { manga(id: $id) { id title sourceId } }", id=manga_id)["manga"]
+        return self.graphql("query($id: Int!) { manga(id: $id) { id title sourceId url realUrl } }", id=manga_id)["manga"]
 
     def archive_identity(self, manga):
         if not self.bindings:

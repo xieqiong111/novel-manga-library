@@ -71,6 +71,14 @@ class ChapterArchiveTests(unittest.TestCase):
             with self.assertRaises(BangumiFolderConflict):
                 archive_directories(root, [], {**live.archive_identity(manga), "id": 18})
 
+    def test_single_work_graphql_selection_includes_canonical_source_url(self):
+        client = Suwayomi({"SUWAYOMI_URL": "http://example.invalid"})
+        result = {"id": 17, "realUrl": "https://example.invalid/manga/17"}
+        with patch.object(client, "graphql", return_value={"manga": result}) as graphql:
+            self.assertEqual(client.manga(17), result)
+        self.assertIn("sourceId url realUrl", graphql.call_args.args[0])
+        self.assertEqual(graphql.call_args.kwargs, {"id": 17})
+
     def test_volume_layout_uses_verified_version_and_keeps_one_cbz_per_chapter(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
