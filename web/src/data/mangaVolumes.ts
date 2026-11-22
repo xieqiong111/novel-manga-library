@@ -44,12 +44,15 @@ export interface MangaVolumeGroup {
   confirmed?: boolean
 }
 
-export function mangaVolumeGroups(manga: Manga | null, chapters: MangaChapter[], resolved?: PublishedVolume[]) {
+export function mangaVolumeGroups(manga: Manga | null, chapters: MangaChapter[], resolved?: PublishedVolume[], metadataVolumes: number[] = []) {
   const url = manga?.url && URL.canParse(manga.url) ? new URL(manga.url) : null
   const catalog = resolved ?? (url ? catalogs[`${manga?.sourceId}:${url.hostname}${url.pathname.replace(/\/$/, '')}`] ?? [] : [])
   const volumes = new Map<number, MangaVolumeGroup>(catalog.map((entry) => [entry.number, {
     number: entry.number, expected: entry.chapters, citation: entry.citation, confirmed: entry.confirmed, chapters: [],
   }]))
+  for (const number of metadataVolumes) {
+    if (!volumes.has(number)) volumes.set(number, { number, chapters: [] })
+  }
   const assignments = new Map(catalog.filter((entry) => entry.confirmed !== false).flatMap((entry) => entry.chapters.map((chapter) => [chapter, entry.number] as const)))
   const labelled = chapters.map((item) => ({ item, ...chapterLabels(item.name) }))
   const count = new Map<string, number>()

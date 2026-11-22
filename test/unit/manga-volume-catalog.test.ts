@@ -8,6 +8,7 @@ import { createMangaVolumeCatalogApi } from '../../server/manga-volume-api.mjs'
 import { mergeVolumeSources } from '../../server/manga-volume-catalog.mjs'
 import { readPublisherVolume } from '../../server/manga-publisher.mjs'
 import { openTomeVolumes } from '../../server/opentome-volumes.mjs'
+import { mangaVolumeGroups } from '../../web/src/data/mangaVolumes'
 
 const sample = { id: '3502', sourceId: '774030471139699415', title: '为美好的世界献上祝福！',
   url: 'https://baozimh.org/manga/weimeihaodeshijiexianshangzhufu-xiaonatumetuntamazi' }
@@ -36,6 +37,35 @@ it('binds the reference catalog to the exact work and keeps unconfirmed mappings
     const persisted = await service.get('3502')
     expect(persisted.volumes).toEqual(result.volumes)
     expect(metadata).toHaveBeenCalledWith('related-volumes', { subjectId: 143035 }, undefined, undefined)
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+it('exposes matched volume metadata and cover even without a chapter catalog', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'studio-volume-edition-'))
+  try {
+    const downloadFoldersFile = path.join(root, 'folders.json')
+    const manga = { id: '3323', sourceId: '900', title: '剑风传奇', url: 'https://example.test/berserk' }
+    await mkdir(path.join(root, 'bangumi-manga'))
+    await writeFile(path.join(root, 'bangumi-manga', '3323.json'), JSON.stringify({
+      mangaId: '3323', sourceId: manga.sourceId, subjectId: 9477, title: manga.title,
+    }))
+    const cover = { contentType: 'image/jpeg', body: Buffer.from('cover') }
+    const metadata = vi.fn(async (action) => {
+      if (action === 'related-volumes') return { volumes: [{ id: 9478, name: 'ベルセルク (1)' }] }
+      if (action === 'volume-cover') return cover
+      return { subject: { id: 9478, nameCn: '', date: '1990-11-26', summary: '日本語の紹介' },
+        isbn: '978-4-592-13691-4', coverUrl: 'https://lain.bgm.tv/pic/cover/l/aa/ab/9478.jpg' }
+    })
+    const service = createMangaVolumeCatalogApi({ settings: { config: { downloadFoldersFile } },
+      mangaClient: { getManga: async () => manga }, metadata })
+    const { volumes, volumeMetadata } = await service.update('3323', {})
+    expect(volumes).toEqual([])
+    expect(mangaVolumeGroups(null, [], [], volumeMetadata.map((row) => row.number)).groups).toEqual([{ number: 1, chapters: [] }])
+    await expect(service.edition('3323', 1)).resolves.toEqual({ number: 1, subjectId: 9478, title: '剑风传奇 · 第 1 卷',
+      isbn: '9784592136914', date: '1990-11-26', summary: '', hasCover: true })
+    await expect(service.edition('3323', 1, true)).resolves.toBe(cover)
+    await expect(service.edition('3323', 2, true)).rejects.toMatchObject({ code: 'VOLUME_METADATA_UNMATCHED' })
+    expect(metadata.mock.calls.map(([action]) => action)).toEqual(['related-volumes', 'volume-detail', 'volume-cover'])
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 

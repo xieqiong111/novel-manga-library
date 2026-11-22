@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { ArrowLeft, BookOpen, Download, ExternalLink, RefreshCw } from 'lucide-react'
 import { Link, useParams } from 'react-router-dom'
 import { Badge, Button, Card, EmptyState, SectionTitle, Spinner } from '@/components/common/ui'
+import { ApiCover } from '@/components/common/ApiCover'
 import { PageHeader } from '@/components/common/PageHeader'
 import { Modal } from '@/components/common/Modal'
 import { useToast } from '@/components/common/Toast'
@@ -53,10 +54,11 @@ function MangaDetail({ id }: { id: string }) {
       ...row, citation: { url: row.url, label: row.source === 'publisher' ? '出版社官网' :
         row.source === 'opentome' ? 'OpenTomeDB' : '参考目录' },
     })) : undefined
-    return mangaVolumeGroups(manga, volumePage.data ?? [], resolved)
+    return mangaVolumeGroups(manga, volumePage.data ?? [], resolved, record?.volumeMetadata.map((row) => row.number))
   }, [manga, volumePage.data, catalog.data])
   const volumeKey = volumeSelection || String(volumes.groups[0]?.number ?? 'unassigned')
   const activeVolume = volumes.groups.find((group) => String(group.number) === volumeKey)
+  const editionRecord = catalog.data?.volumeMetadata.find((row) => row.number === activeVolume?.number)
   const volumePending = volumeMode && (volumePage.loading || !volumePage.data) && !volumePage.error
   const visibleChapters = volumeMode
     ? volumePage.data && !volumePending && !volumePage.error ? activeVolume?.chapters ?? volumes.unassigned : []
@@ -108,7 +110,9 @@ function MangaDetail({ id }: { id: string }) {
   const refreshCatalog = (action: 'resolve' | 'opentome', volume?: number) => run('catalog', async () => {
     const result = await mangaVolumeApi.resolve(id, action, volume)
     setCatalogRevision((value) => value + 1)
-    toast({ tone: 'success', title: result.volumes.length ? '卷目录已更新' : '已查询，暂无核验过的卷目录' })
+    toast(result.volumeMetadata.length
+      ? { tone: 'success', title: `已匹配 ${result.volumeMetadata.length} 卷 Bangumi 元数据` }
+      : { tone: 'info', title: result.volumes.length ? '卷目录已更新，暂无 Bangumi 单行本资料' : '暂未取得卷目录或单行本资料' })
   })
 
   const changeMembership = (operation: 'library' | 'subscribe', add: boolean) => run(operation, async () => {
@@ -230,7 +234,7 @@ function MangaDetail({ id }: { id: string }) {
                   {catalog.error && <span role="alert" className="text-negative">{catalog.error}</span>}
                 </div>
               )}
-              {volumeMode && volumePage.data && !currentLoading && !currentError && (
+              {volumeMode && (Boolean(catalog.data?.volumeMetadata.length) || (volumePage.data && !currentLoading && !currentError)) && (
                 volumes.groups.length ? (
                   <div className="mt-3 space-y-2 rounded-xl border border-line p-3">
                     <label className="flex flex-wrap items-center gap-2 text-xs font-semibold text-ink">
@@ -241,23 +245,20 @@ function MangaDetail({ id }: { id: string }) {
                         {volumes.groups.map((group) => (
                           <option key={group.number} value={group.number}>第 {group.number} 卷 · {group.chapters.length} 话可查看</option>
                         ))}
-                        {volumes.unassigned.length > 0 && <option value="unassigned">未匹配单行本 · {volumes.unassigned.length} 项</option>}
+                        {volumes.unassigned.length > 0 && <option value="unassigned">未确认卷归属的章节 · {volumes.unassigned.length} 项</option>}
                       </select>
                     </label>
-                    {activeVolume && catalog.data?.volumeMetadata.filter((row) => row.number === activeVolume.number).map((row) => (
-                      <p key={row.subjectId} className="flex flex-wrap gap-2 text-xs text-ink-soft">
-                        <a href={`https://bgm.tv/subject/${row.subjectId}`} target="_blank" rel="noreferrer" className="text-accent">Bangumi 单行本</a>
-                        {row.isbn && <span>ISBN {row.isbn}</span>}
-                        {row.date && <span>{row.date}</span>}
-                      </p>
-                    ))}
+                    {editionRecord && <VolumeEdition key={`${id}:${editionRecord.subjectId}:${catalogRevision}`} id={id} record={editionRecord} />}
+                    {activeVolume && IS_LIVE && catalog.data && !editionRecord && <p className="text-xs text-ink-soft">此卷暂无已匹配的 Bangumi 元数据。</p>}
                     {activeVolume && (
                       <p className="break-words text-xs text-ink-soft">
                         {activeVolume.expected
                           ? activeVolume.confirmed === false
                             ? `第 ${activeVolume.number} 卷参考目录待确认，暂不自动归卷。`
                             : `第 ${activeVolume.number} 卷目录包含${activeVolume.expected.map((chapter) => `第 ${chapter} 话`).join('、')}。已匹配源站 ${activeVolume.chapters.length}/${activeVolume.expected.length} 话。`
-                          : `以下 ${activeVolume.chapters.length} 话由源站标注为第 ${activeVolume.number} 卷。`}
+                          : activeVolume.chapters.length
+                            ? `以下 ${activeVolume.chapters.length} 话由源站标注为第 ${activeVolume.number} 卷。`
+                            : '此卷暂无可核对的分话目录。'}
                         {activeVolume.citation && <>{' '}<a href={activeVolume.citation.url} target="_blank" rel="noreferrer" className="font-semibold text-accent">{activeVolume.citation.label}</a></>}
                       </p>
                     )}
@@ -335,6 +336,28 @@ function MangaDetail({ id }: { id: string }) {
       </Modal>
     </div>
   )
+}
+
+function VolumeEdition({ id, record }: { id: string; record: { number: number; subjectId: number; isbn?: string; date?: string } }) {
+  const { data, loading, error } = useAsync(() => mangaVolumeApi.edition(id, record.number), [id, record.number])
+  const title = data?.title ?? `第 ${record.number} 卷`
+  const isbn = data?.isbn || record.isbn
+  const date = data?.date || record.date
+  return <div className="flex gap-3 rounded-lg bg-surface-soft p-2 text-xs">
+    {data?.hasCover && <ApiCover path={mangaVolumeApi.coverPath(id, record.number)} title={title} eager
+      className="aspect-[2/3] w-16 shrink-0 rounded-md" />}
+    <div className="min-w-0 space-y-1">
+      <p className="break-words font-semibold text-ink">{title}</p>
+      <p className="flex flex-wrap items-center gap-2 text-ink-soft">
+        <a href={`https://bgm.tv/subject/${record.subjectId}`} target="_blank" rel="noreferrer" className="font-semibold text-accent">Bangumi 单行本</a>
+        {isbn && <span>ISBN {isbn}</span>}
+        {date && <span>{date}</span>}
+      </p>
+      {loading && <p role="status" className="text-ink-soft">读取卷资料…</p>}
+      {error && <p className="text-ink-soft">暂时无法读取详细卷资料。{error}</p>}
+      {data?.summary && <p className="line-clamp-4 break-words text-ink-soft">{data.summary}</p>}
+    </div>
+  </div>
 }
 
 function ChapterArchiveBadge({ archive }: { archive?: KomgaChapter }) {

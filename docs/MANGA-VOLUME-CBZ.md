@@ -30,6 +30,8 @@ Studio 先绑定 Bangumi 漫画系列和 Suwayomi 的确切来源与作品。出
 
 在漫画详情选择「按单行本查看」后，可以查询 Bangumi 单行本，或用选中卷的 ISBN 查询已配置的 OpenTomeDB。OpenTomeDB 官方 SQLite 可以放入 Studio 的数据目录，配置 `LN_OPENTOME_SQLITE=/data/manga-metadata.sqlite` 并重启 Studio。数据库以只读方式打开。数据许可和来源见 [OpenTomeDB](https://opentomedb.com/data/)。
 
+已匹配的 Bangumi 单行本可直接选卷查看封面、ISBN 和出版日期。分话目录另行核对，卷资料匹配后即可显示。
+
 《为美好的世界献上祝福！》示例的正篇目录使用 [第 1–20 卷参考目录](https://it.wikipedia.org/wiki/Capitoli_di_Konosuba!_-_This_Wonderful_World) 和 [第 21 卷出版社试读](https://yenpress.com/titles/9798855433692-konosuba-god-s-blessing-on-this-wonderful-world-vol-21-manga)。第 22–23 卷的 [参考话号](https://konosuba.fandom.com/wiki/Category:Konosuba_Chapters) 目前标为待核验。
 
 ### 卷目录 API
@@ -37,6 +39,8 @@ Studio 先绑定 Bangumi 漫画系列和 Suwayomi 的确切来源与作品。出
 | 请求 | 用途 |
 | --- | --- |
 | `GET /api/manga/:id/volume-catalog` | 查看来源、目录、核验状态和 Bangumi 单行本 |
+| `GET /api/manga/:id/volume-catalog?volume=1` | 查看第 1 卷对应的 Bangumi 资料 |
+| `GET /api/manga/:id/volume-catalog?volume=1&asset=cover` | 读取已匹配卷的 Bangumi 封面 |
 | `POST /api/manga/:id/volume-catalog` ，`action: "resolve"` | 绑定作品并载入参考目录与关联单行本 |
 | 同上，`action: "opentome", volume: 1` | 用指定卷的 Bangumi ISBN 匹配 SQLite 版本 |
 | 同上，`action: "search-publisher", volume: 21` | 查找 Yen Press 和 KADOKAWA 的官方候选页面 |

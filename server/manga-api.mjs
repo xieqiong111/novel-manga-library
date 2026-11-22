@@ -141,6 +141,19 @@ export function createMangaApi(client, logger = { warn() {} },
 
       if (mangaVolumes && segments.length === 2 && segments[1] === 'volume-catalog') {
         const mangaId = requiredId(segments[0], 'mangaId')
+        if (method === 'GET' && params.has('volume')) {
+          limitRequest(req, 'volume-metadata', 40)
+          const number = intParam(params, 'volume', 1, 1, 9999)
+          const cover = queryParam(params, 'asset', { maxLength: 5 }) === 'cover'
+          const result = await mangaVolumes.edition(mangaId, number, cover)
+          if (cover) {
+            res.writeHead(200, { 'content-type': result.contentType, 'content-length': result.body.length,
+              'cache-control': 'private, max-age=300', 'x-content-type-options': 'nosniff',
+              'content-security-policy': "default-src 'none'; sandbox" })
+            res.end(result.body)
+          } else sendJson(res, 200, result)
+          return true
+        }
         sendJson(res, 200, method === 'GET' ? await mangaVolumes.get(mangaId)
           : await mangaVolumes.update(mangaId, await readJson(req)))
         return true

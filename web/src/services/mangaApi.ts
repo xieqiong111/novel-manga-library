@@ -50,6 +50,9 @@ export interface MangaVolumeCatalog {
 }
 export const mangaVolumeApi = {
   get: (id: string) => apiFetch<MangaVolumeCatalog>(mangaPath(id) + '/volume-catalog'),
+  edition: (id: string, number: number) => apiFetch<{ number: number; subjectId: number; title: string;
+    isbn: string | null; date: string | null; summary: string; hasCover: boolean }>(`${mangaPath(id)}/volume-catalog?volume=${number}`),
+  coverPath: (id: string, number: number) => `${mangaPath(id)}/volume-catalog?volume=${number}&asset=cover`,
   resolve: (id: string, action: 'resolve' | 'opentome', volume?: number) =>
     apiFetch<MangaVolumeCatalog>(mangaPath(id) + '/volume-catalog', jsonPost({ action, volume })),
 }

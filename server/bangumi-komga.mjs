@@ -441,6 +441,11 @@ export function createBangumiKomga({ url, requestMetadata, komga, getOptions, ge
     const input = { ...data.metadata }
     if (japaneseText(text(input.summary, 20000))) delete input.summary
     const patch = changes(target.metadata, input, 'book', subject, options)
+    const isbn = text(data.isbn, 40).replace(/[\s-]/g, '').toUpperCase()
+    if (/^(第\d{2,4}卷)(?: - \1)?$/u.test(target.name) && /^(?:\d{13}|\d{9}[\dX])$/.test(isbn) &&
+        target.metadata.isbnLock !== true && !target.metadata.isbn) {
+      patch.isbn = isbn
+    }
     const cover = includeCover ? await previewCover(client, 'book', bookId, data) : null
     ensureCurrent()
     if (Object.keys(patch).length) {
@@ -465,6 +470,20 @@ export function createBangumiKomga({ url, requestMetadata, komga, getOptions, ge
     active += 1
     try {
       if (action === 'identity') return await identity(body, connection)
+      if (action === 'volume-cover') {
+        if (!subjectId(body.subjectId)) throw new MetadataError(400, 'INVALID_SUBJECT_ID', '漫画条目 ID 无效。')
+        const data = await adapter('volume-detail', { kind: 'manga', scope: 'book', subjectId: body.subjectId, includeCover: true }, connection)
+        if (candidate(data.subject).id !== body.subjectId) throw new MetadataError(502, 'INVALID_METADATA_RESPONSE', '封面与请求的单行本不符。')
+        const url = bangumiCoverUrl(data.coverUrl)
+        if (!url) throw new MetadataError(404, 'VOLUME_COVER_UNAVAILABLE', 'Bangumi 当前未提供此卷封面。')
+        try {
+          const { image } = await fetchCover(url)
+          return { contentType: image.type, body: Buffer.from(await image.arrayBuffer()) }
+        } catch (error) {
+          if (error instanceof MetadataError) throw error
+          throw new MetadataError(502, 'VOLUME_COVER_FAILED', '无法取得此卷的 Bangumi 封面。')
+        }
+      }
       if (action === 'related-volumes' || action === 'volume-detail') {
         if (!subjectId(body.subjectId)) throw new MetadataError(400, 'INVALID_SUBJECT_ID', '漫画条目 ID 无效。')
         return await adapter(action, { kind: 'manga', scope: action === 'related-volumes' ? 'series' : 'book',

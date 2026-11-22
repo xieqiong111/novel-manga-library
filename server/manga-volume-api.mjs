@@ -2,6 +2,7 @@ import { readDownloadFolders } from '../dist/core/download-folders.js'
 import { MetadataError } from './bangumi-komga.mjs'
 import { bindMangaTitle, readMangaBangumiBinding, resolveDownloadSubject } from './bangumi-download.mjs'
 import { sameBangumiTitle } from './bangumi-title.mjs'
+import { bangumiCoverUrl } from './bangumi-cover.mjs'
 import { mangaVolumePreferences, publishedMangaVolumes, readVolumeCatalog, saveMangaVolumeCatalog } from './manga-volume-catalog.mjs'
 import { findPublisherVolumes, readPublisherVolume } from './manga-publisher.mjs'
 import { openTomeVolumes } from './opentome-volumes.mjs'
@@ -76,6 +77,26 @@ export function createMangaVolumeCatalogApi({ settings, mangaClient, metadata, f
     return { enabled: config.enabled, sources: config.sources, openTomeConfigured: Boolean(process.env.LN_OPENTOME_SQLITE),
       bound: Boolean(record), volumes: (record?.volumes ?? []).filter((entry) => config.sources.includes(entry.source)),
       volumeMetadata: record?.volumeMetadata ?? [] }
+  }
+
+  async function edition(mangaId, number, cover = false) {
+    const [record, binding] = await Promise.all([readVolumeCatalog(file, mangaId), readMangaBangumiBinding(file, mangaId)])
+    const row = record?.volumeMetadata?.find((entry) => entry.number === number)
+    if (!row || !binding || record.subjectId !== binding.subjectId || record.sourceId !== binding.sourceId ||
+        record.mangaId !== mangaId) {
+      throw new MetadataError(404, 'VOLUME_METADATA_UNMATCHED', '这一卷尚未匹配 Bangumi 单行本。')
+    }
+    if (cover) return metadata('volume-cover', { subjectId: row.subjectId })
+    const detail = await metadata('volume-detail', { subjectId: row.subjectId, includeCover: true })
+    if (detail?.subject?.id !== row.subjectId) throw new MetadataError(502, 'INVALID_METADATA_RESPONSE', 'Bangumi 返回的单行本条目不符。')
+    const string = (value, max = 300) => typeof value === 'string' ? value.trim().slice(0, max) : ''
+    const chinese = (value, max) => {
+      const text = string(value, max)
+      return /\p{Script=Han}/u.test(text) && !/[\p{Script=Hiragana}\p{Script=Katakana}]/u.test(text) ? text : ''
+    }
+    return { number, subjectId: row.subjectId, title: chinese(detail.subject.nameCn) || `${binding.title} · 第 ${number} 卷`,
+      isbn: isbnOf(detail.isbn) || row.isbn || null, date: string(detail.subject.date, 20) || row.date || null,
+      summary: chinese(detail.subject.summary, 500), hasCover: Boolean(bangumiCoverUrl(detail.coverUrl)) }
   }
 
   async function update(mangaId, body) {
@@ -166,5 +187,5 @@ export function createMangaVolumeCatalogApi({ settings, mangaClient, metadata, f
     })
   }
 
-  return { get, update, prepare, volumeSubject, rememberVolume, isEnabled: async () => (await preferences()).enabled }
+  return { get, edition, update, prepare, volumeSubject, rememberVolume, isEnabled: async () => (await preferences()).enabled }
 }
