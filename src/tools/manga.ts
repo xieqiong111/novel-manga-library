@@ -13,14 +13,14 @@ const MAX_PAGE_SIZE = 100
 const archivePolicy = {
   mode: 'automatic-per-chapter',
   agentAction: 'poll-only',
-  instruction: '归档服务先自动保存每话 CBZ。启用分卷归档且核验目录的章节齐全时，自动按单行本顺序合为一个带章节书签的 CBZ。Agent 只提交下载和查询状态，不调用 Docker、终端、ZIP 或脚本手动打包。',
+  instruction: '归档服务先自动保存每话 CBZ。仅当设置为整卷 CBZ 且已核验目录的章节齐全时，自动按单行本顺序合为一个带章节书签的 CBZ。Agent 只提交下载和查询状态，不调用 Docker、终端、ZIP 或脚本手动打包。',
 }
 
 const automaticArchive = [
   'In managed mode Studio owns all task execution. Follow the reported API results and do not start a local downloader.',
   'The archive service automatically packages each completed chapter as one CBZ. Your only follow-up is to poll the Studio tools. Do not call Docker, shell commands, zip utilities, or scripts to package files. Report archive failures.',
   'Use actual chapter IDs. Select individually downloadable chapters even when their names contain volume markers. If a source only has whole-volume entries, choose a source with separate chapters.',
-  'With volume archiving enabled, Studio combines a complete verified contents list in tankobon order into one CBZ with chapter bookmarks. Incomplete or unverified chapters remain separate. packedVolume in the status identifies a chapter stored in that complete CBZ. Use manga_volume_catalog to check the catalog. Existing whole-volume archives are preserved.',
+  'When the configured layout is volume-cbz, Studio combines a complete verified contents list in tankobon order into one CBZ with chapter bookmarks. Incomplete or unverified chapters remain separate. packedVolume in the status identifies a chapter stored in that complete CBZ. Use manga_volume_catalog to check the catalog. Existing whole-volume archives are preserved.',
   'Use manga_komga_status for the archived state and location.nasPath when present. A name without a verified location is insufficient to claim an absolute path. Confirm Komga indexing separately.',
 ].join(' ')
 
@@ -131,7 +131,12 @@ function archiveNotice(status: MangaArchiveStatus): string {
     `下载失败 ${counts('failed')}`, `归档失败 ${counts('archive_failed')}`,
     `已在旧卷包 ${counts('in_legacy_volume')}`,
   ].join('，')
-  return `Docker 自动归档，已核验且凑齐的单行本会合为一个 CBZ。本次查询${summary}。请用实际文件名确认归档，Komga 收录状态需另查。`
+  const layout = status.archiveLayout && {
+    chapter: '单话 CBZ 保存在作品文件夹',
+    'volume-chapters': '单话 CBZ 按已核验单行本分目录保存',
+    'volume-cbz': '已核验且凑齐的单行本会合为一个 CBZ',
+  }[status.archiveLayout]
+  return `Docker 自动归档${layout ? `，${layout}` : '，归档方式以网页设置为准'}。本次查询${summary}。请用实际文件名确认归档，Komga 收录状态需另查。`
 }
 
 function queueNotice(queue: SuwayomiTask[], cancelled: boolean): string {

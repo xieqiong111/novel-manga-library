@@ -74,6 +74,13 @@ class ChapterArchiveTests(unittest.TestCase):
             self.assertTrue((first / "第001话 [3].cbz").is_file())
             self.assertFalse(volume.exists())
             rows[1]["isDownloaded"] = True
+            settings.write_text(json.dumps({"mangaArchive": {"mode": "volume-chapters"}}))
+            self.assertEqual(run_once(client, root, history=history, settings=settings), 0)
+            self.assertEqual(sorted(file.name for file in first.glob("*.cbz")),
+                             ["第001话 [3].cbz", "第002话 [4].cbz"])
+            self.assertEqual(archive_catalog(client, root, 17, settings=settings)["archiveLayout"], "volume-chapters")
+
+            settings.write_text(json.dumps({"mangaArchive": {"mode": "volume-cbz"}}))
             for _ in range(2):
                 self.assertEqual(run_once(client, root, history=history, settings=settings), 0)
             self.assertEqual(client.calls, [3, 5, 4])
@@ -96,6 +103,15 @@ class ChapterArchiveTests(unittest.TestCase):
                              [(relative, True), (relative, True)])
             self.assertEqual([event["file"] for event in history.events(0)["events"]].count(relative), 1)
             self.assertEqual([entry["file"] for entry in history.page(None, 20, None)["history"]].count(relative), 2)
+
+            settings.write_text(json.dumps({"mangaArchive": {"mode": "chapter"}}))
+            rows[3]["isDownloaded"] = True
+            self.assertEqual(run_once(client, root, history=history, settings=settings), 0)
+            self.assertTrue((first.parent / "第004话 [6].cbz").is_file())
+            self.assertTrue(volume.is_file())
+            self.assertTrue((first.parent / "第02卷" / "第003话 [5].cbz").is_file())
+            self.assertFalse((first.parent / "第02卷" / "第02卷.cbz").exists())
+            self.assertEqual(client.calls, [3, 5, 4, 6])
 
     def test_bangumi_binding_names_only_new_chapters_and_protects_other_editions(self):
         with tempfile.TemporaryDirectory() as directory:

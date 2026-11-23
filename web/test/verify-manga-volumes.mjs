@@ -132,7 +132,7 @@ try {
   await mobile.goto(base + '/#/manga/3502')
   await mobile.getByRole('button', { name: '按单行本查看' }).click()
   await testSourceListing(mobile)
-  let savedArchive = { enabled: false, sources: ['publisher', 'reference', 'opentome'] }
+  let savedArchive = { mode: 'chapter', sources: ['publisher', 'reference', 'opentome'] }
   const settings = await browser.newPage({ viewport: { width: 390, height: 844 } })
   await settings.route('**/api/**', async (route) => {
     const target = new URL(route.request().url())
@@ -145,14 +145,21 @@ try {
     return route.fulfill({ json: target.pathname.endsWith('/auth/status') ? { enabled: false } : [] })
   })
   await settings.goto(base + '/#/settings')
-  await settings.getByRole('switch', { name: '按单行本建立子目录' }).check()
-  await settings.getByRole('checkbox', { name: 'OpenTomeDB 本地目录' }).uncheck()
-  await settings.getByRole('button', { name: '保存漫画归档设置' }).click()
-  await settings.getByText('漫画归档设置已保存').waitFor()
-  await settings.reload()
-  await settings.getByRole('switch', { name: '按单行本建立子目录' }).waitFor()
-  assert.equal(await settings.getByRole('switch', { name: '按单行本建立子目录' }).isChecked(), true)
-  assert.equal(await settings.getByRole('checkbox', { name: 'OpenTomeDB 本地目录' }).isChecked(), false)
+  const source = settings.getByRole('checkbox', { name: 'OpenTomeDB 本地目录' })
+  await source.waitFor()
+  assert.equal(await source.isDisabled(), true)
+  for (const [mode, label] of [['volume-chapters', '按单行本分目录'], ['volume-cbz', '按单行本合卷'], ['chapter', '不分卷']]) {
+    const radio = settings.getByRole('radio', { name: new RegExp(label) })
+    await radio.check()
+    if (mode === 'volume-chapters') await source.uncheck()
+    await settings.getByRole('button', { name: '保存漫画归档设置' }).click()
+    await settings.getByText('漫画归档设置已保存').waitFor()
+    assert.equal(savedArchive.mode, mode)
+    await settings.reload()
+    await radio.waitFor()
+    assert.equal(await radio.isChecked(), true)
+    assert.equal(await source.isChecked(), false)
+  }
   assert.equal(await settings.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true)
   console.log('PASS desktop and mobile volume grouping, paginated lookup, version isolation, source listing import and chapter-only enqueue')
 } finally {

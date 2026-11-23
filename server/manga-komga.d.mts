@@ -13,6 +13,7 @@ export interface MangaArchiveSelection {
 export interface MangaArchiveStatus {
   available: boolean
   archiveMode?: 'volume' | 'chapter' | 'unsupported'
+  archiveLayout?: import('../src/core/download-folders.js').MangaArchiveMode
   bangumiSubjectId?: number
   folderTitle?: string
   volumes: Array<{

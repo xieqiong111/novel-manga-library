@@ -1,11 +1,14 @@
 import { lstat, readFile, realpath } from 'node:fs/promises'
 import path from 'node:path'
 
+export const mangaArchiveModes = ['chapter', 'volume-chapters', 'volume-cbz'] as const
+export type MangaArchiveMode = typeof mangaArchiveModes[number]
+
 export interface DownloadFolders {
   novelFolder: string | null
   mangaFolder: string
   mangaPrevious: string[]
-  mangaArchive?: { enabled: boolean; sources: string[] }
+  mangaArchive?: { enabled: boolean; mode?: MangaArchiveMode; sources: string[] }
 }
 
 export function validSubfolder(folder: unknown): folder is string {

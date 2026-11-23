@@ -88,6 +88,7 @@ export function createMangaKomga(client, getVolumes, archiveUrl) {
       if (!catalog.archiveMode) return result
       return {
         ...result, archiveMode: catalog.archiveMode,
+        ...(catalog.archiveLayout ? { archiveLayout: catalog.archiveLayout } : {}),
         ...(catalog.bangumiSubjectId ? { bangumiSubjectId: catalog.bangumiSubjectId, folderTitle: catalog.folderTitle } : {}),
         chapters: chapters.map((chapter) => {
           const task = tasks.get(chapter.id) ?? null

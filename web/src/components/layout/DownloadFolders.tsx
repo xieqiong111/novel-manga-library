@@ -12,7 +12,13 @@ const catalogSources = [
   ['reference', '核对过的参考目录'],
   ['opentome', 'OpenTomeDB 本地目录'],
 ] as const
-type ArchiveOptions = { enabled: boolean; sources: string[] }
+const archiveChoices = [
+  ['chapter', '不分卷 · 单话 CBZ', '所有新章节直接保存在作品文件夹。'],
+  ['volume-chapters', '按单行本分目录 · 单话 CBZ', '每卷一个文件夹，里面每话各有一个 CBZ。'],
+  ['volume-cbz', '按单行本合卷 · 整卷 CBZ', '凑齐一卷后合成一个带章节书签的 CBZ。缺话期间仍可阅读已下载的单话。'],
+] as const
+type ArchiveMode = typeof archiveChoices[number][0]
+type ArchiveOptions = { mode: ArchiveMode; sources: string[] }
 type FolderSettings = { enabled: boolean; root: string | null; folder: string | null; legacyFolder?: string; archive?: ArchiveOptions }
 type Folders = Record<Kind, FolderSettings>
 type Library = { id: string; name: string; selectable: boolean; folder: string | null }
@@ -29,7 +35,7 @@ export function DownloadFolders() {
   return (
     <Card className="p-5">
       <SectionTitle title="NAS 保存目录" />
-      <p className="mb-4 mt-2 text-xs text-ink-soft">选择轻小说 EPUB 和漫画 CBZ 的保存位置。漫画可按单行本目录自动合卷。</p>
+      <p className="mb-4 mt-2 text-xs text-ink-soft">选择轻小说 EPUB 和漫画 CBZ 的保存位置。</p>
       {catalog.loading && !catalog.data && <p role="status"><Spinner /> 读取保存目录…</p>}
       {catalog.error && <p role="alert" className="text-sm text-negative">{catalog.error}</p>}
       {catalog.data && <div className="grid gap-4 md:grid-cols-2">
@@ -58,7 +64,7 @@ function MangaArchiveSettings({ saved, reload }: { saved: ArchiveOptions; reload
     setError('')
     setBusy(true)
     try {
-      await post(endpoint + '/manga-archive', options)
+      await post(endpoint + '/manga-archive', { mode: options.mode, sources: options.sources })
       toast({ tone: 'success', title: '漫画归档设置已保存' })
       reload()
     } catch (failure) {
@@ -66,21 +72,23 @@ function MangaArchiveSettings({ saved, reload }: { saved: ArchiveOptions; reload
     } finally { setBusy(false) }
   }
   return <section className="mt-4 space-y-3 rounded-xl border border-line p-4">
-    <h3 className="text-sm font-semibold text-ink">漫画分卷归档</h3>
-    <label className="flex items-center gap-2 text-sm">
-      <input type="checkbox" role="switch" className="accent-accent" checked={options.enabled}
-        disabled={busy} onChange={(event) => setOptions({ ...options, enabled: event.target.checked })} />
-      按单行本建立子目录
-    </label>
-    <p className="text-xs text-ink-soft">按已核验的目录集齐一卷后自动合为一个带章节书签的 CBZ。缺话继续保存单话，待确认章节进入「未分卷」。</p>
-    <fieldset disabled={busy} className="flex flex-wrap gap-3 text-xs">
+    <fieldset disabled={busy} className="space-y-2">
+      <legend className="mb-2 text-sm font-semibold text-ink">漫画归档方式</legend>
+      {archiveChoices.map(([mode, label, description]) => <label key={mode} className="flex items-start gap-2 text-sm">
+        <input type="radio" name="manga-archive-mode" value={mode} className="mt-1 shrink-0 accent-accent"
+          checked={options.mode === mode} onChange={() => setOptions({ ...options, mode })} />
+        <span>{label}<span className="block text-xs text-ink-soft">{description}</span></span>
+      </label>)}
+    </fieldset>
+    {options.mode !== 'chapter' && <p className="text-xs text-ink-soft">按已核验卷目录分组，待确认章节进入「未分卷」。</p>}
+    <fieldset disabled={busy || options.mode === 'chapter'} className="flex flex-wrap gap-3 text-xs">
       <legend className="mb-2 font-semibold">卷目录来源</legend>
       {catalogSources.map(([source, label]) => <label key={source} className="flex items-center gap-1.5">
         <input type="checkbox" className="accent-accent" checked={options.sources.includes(source)} onChange={() => toggle(source)} />
         {label}
       </label>)}
     </fieldset>
-    {options.sources.includes('opentome') && <p className="text-xs text-ink-soft">OpenTomeDB 由服务端挂载 SQLite 文件后可用。</p>}
+    {options.mode !== 'chapter' && options.sources.includes('opentome') && <p className="text-xs text-ink-soft">OpenTomeDB 由服务端挂载 SQLite 文件后可用。</p>}
     {error && <p role="alert" className="text-xs text-negative">{error}</p>}
     <Button size="sm" variant="primary" loading={busy} disabled={busy || !changed} onClick={() => void save()}>保存漫画归档设置</Button>
   </section>

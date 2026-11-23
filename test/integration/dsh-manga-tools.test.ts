@@ -30,7 +30,7 @@ const runtime = {
 
 const komga = {
   status: vi.fn<MangaKomga['status']>(async () => ({
-    available: true, archiveMode: 'chapter', volumes: [], chapters: [
+    available: true, archiveMode: 'chapter', archiveLayout: 'volume-cbz', volumes: [], chapters: [
       { id: '41', number: '2', name: '第2卷 第2话', downloaded: false, filename: null, state: 'downloading',
         task: { id: '41', mangaId: '22', title: 'Example Manga', chapterId: '41', chapterName: '第2卷 第2话',
           state: 'running', upstreamState: 'DOWNLOADING', percent: 61 } },

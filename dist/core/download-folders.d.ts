@@ -1,9 +1,12 @@
+export declare const mangaArchiveModes: readonly ["chapter", "volume-chapters", "volume-cbz"];
+export type MangaArchiveMode = typeof mangaArchiveModes[number];
 export interface DownloadFolders {
     novelFolder: string | null;
     mangaFolder: string;
     mangaPrevious: string[];
     mangaArchive?: {
         enabled: boolean;
+        mode?: MangaArchiveMode;
         sources: string[];
     };
 }

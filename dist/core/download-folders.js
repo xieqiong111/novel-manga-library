@@ -1,5 +1,6 @@
 import { lstat, readFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
+export const mangaArchiveModes = ['chapter', 'volume-chapters', 'volume-cbz'];
 export function validSubfolder(folder) {
     return typeof folder === 'string' && folder.length <= 512 && (folder === '' || folder.split('/').every((name) => name.length > 0 && !name.startsWith('.') && !/[\\:\x00-\x1f\x7f]/.test(name)));
 }

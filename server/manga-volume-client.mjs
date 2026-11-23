@@ -1,3 +1,4 @@
+import { mangaArchiveModes } from '../dist/core/download-folders.js'
 import { SuwayomiError } from './suwayomi-client.mjs'
 
 const idPattern = /^[1-9]\d{0,9}$/
@@ -54,6 +55,7 @@ export function createMangaVolumeClient(value = process.env.LN_VOLUME_ARCHIVE_UR
       }
       if (result.archiveMode === undefined) return result.volumes
       if (!['volume', 'chapter', 'unsupported'].includes(result.archiveMode) ||
+          (result.archiveLayout !== undefined && !mangaArchiveModes.includes(result.archiveLayout)) ||
           !Number.isInteger(result.chapterCount) || result.chapterCount < 0 || result.chapterCount > 5000 ||
           (result.bangumiSubjectId !== undefined && (!Number.isSafeInteger(result.bangumiSubjectId) ||
             result.bangumiSubjectId <= 0 || typeof result.folderTitle !== 'string' || !result.folderTitle ||

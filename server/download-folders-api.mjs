@@ -2,7 +2,7 @@ import { constants } from 'node:fs'
 import { access, chmod, lstat, mkdir, readdir } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { folderWithin, readDownloadFolders, validSubfolder } from '../dist/core/download-folders.js'
+import { folderWithin, mangaArchiveModes, readDownloadFolders, validSubfolder } from '../dist/core/download-folders.js'
 import { atomicWriteJson } from '../dist/util/json.js'
 import { KomgaError } from './komga-client.mjs'
 import { createKomgaScanner } from './komga-scan.mjs'
@@ -143,7 +143,8 @@ export function createDownloadFoldersApi(settings, getKomga, scan = createKomgaS
 
   async function saveArchive(input) {
     requireMount('manga')
-    if (typeof input?.enabled !== 'boolean' || !Array.isArray(input.sources) ||
+    const validMode = input?.mode === undefined ? typeof input?.enabled === 'boolean' : mangaArchiveModes.includes(input.mode)
+    if (!validMode || !Array.isArray(input.sources) ||
         input.sources.length > volumeSources.length || input.sources.some((source) => !volumeSources.includes(source))) {
       throw new FolderError(400, 'INVALID_MANGA_ARCHIVE', '请选择有效的漫画归档方式与卷目录来源。')
     }

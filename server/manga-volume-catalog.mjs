@@ -3,7 +3,7 @@ import { open } from 'node:fs/promises'
 import path from 'node:path'
 import { atomicWriteJson } from '../dist/util/json.js'
 import { MetadataError } from './bangumi-komga.mjs'
-import { readDownloadFolders } from '../dist/core/download-folders.js'
+import { mangaArchiveModes, readDownloadFolders } from '../dist/core/download-folders.js'
 
 export const volumeSources = ['publisher', 'reference', 'opentome']
 const mangaIdPattern = /^[1-9]\d{0,9}$/
@@ -25,8 +25,11 @@ const fandom = 'https://konosuba.fandom.com/wiki/Category:Konosuba_Chapters'
 
 export function mangaVolumePreferences(input) {
   const sources = input?.sources
+  const mode = input?.mode ?? (input?.enabled === true ? 'volume-cbz' : 'chapter')
+  const selected = mangaArchiveModes.includes(mode) ? mode : 'chapter'
   return {
-    enabled: input?.enabled === true,
+    enabled: selected !== 'chapter',
+    mode: selected,
     sources: Array.isArray(sources) ? volumeSources.filter((source) => sources.includes(source)) : volumeSources,
   }
 }

@@ -476,20 +476,21 @@ def archive_path(directories, filename):
 
 def volume_preferences(settings):
     if not settings:
-        return False, []
+        return "chapter", []
     try:
         with settings.open("rb") as handle:
             value = json.loads(handle.read(65536)).get("mangaArchive", {})
     except FileNotFoundError:
-        return False, []
+        return "chapter", []
     sources = value.get("sources", ["publisher", "reference", "opentome"])
-    return value.get("enabled") is True, sources if isinstance(sources, list) else []
+    mode = value.get("mode", "volume-cbz" if value.get("enabled") is True else "chapter")
+    return mode if mode in ("volume-chapters", "volume-cbz") else "chapter", sources if isinstance(sources, list) else []
 
 
 def volume_assignments(settings, manga, chapters, preferences):
-    enabled, sources = preferences
+    layout, sources = preferences
     binding = manga.get("bangumi")
-    if not enabled or not binding or not settings:
+    if layout == "chapter" or not binding or not settings:
         return {}
     location = settings.parent / "manga-volume-catalogs" / f'{int(manga["id"])}.json'
     if location.parent.is_symlink() or location.is_symlink():
@@ -614,6 +615,7 @@ def archive_catalog(client, root, manga_id, previous=(), *, offset=0, limit=20, 
     legacy, packed = volume_coverage(directories)
     standalone = list(standalone_chapters(chapters))
     preferences = volume_preferences(settings)
+    layout, _ = preferences
     assignments = volume_assignments(settings, manga, chapters, preferences)
     existing = chapter_locations(directories)
     mode = "chapter" if standalone else "unsupported"
@@ -623,7 +625,7 @@ def archive_catalog(client, root, manga_id, previous=(), *, offset=0, limit=20, 
     for number, row in selected_chapters:
         filename = chapter_filename(number, row["id"])
         volume = assignments.get(row["id"])
-        section = volume_folder(volume["number"] if volume else None) if preferences[0] else None
+        section = volume_folder(volume["number"] if volume else None) if layout != "chapter" else None
         destination = chapter_destination(directories, filename, section, existing)
         status = archive_status(destination, filename, [row], archive_errors and (manga_id, filename) in archive_errors)
         key = (row["id"], row["pageCount"])
@@ -640,7 +642,8 @@ def archive_catalog(client, root, manga_id, previous=(), *, offset=0, limit=20, 
             "id": str(row["id"]), "name": row["name"], "number": number, "downloaded": row["isDownloaded"],
             **status,
         })
-    result = {"volumes": [], "archiveMode": mode, "chapters": results, "chapterCount": len(standalone)}
+    result = {"volumes": [], "archiveMode": mode, "archiveLayout": layout, "chapters": results,
+              "chapterCount": len(standalone)}
     if "bangumi" in manga:
         result["bangumiSubjectId"] = manga["bangumi"]["subjectId"]
         result["folderTitle"] = series_title(manga)
@@ -864,6 +867,7 @@ def run_once(client, root, previous=(), archive_errors=None, history=None, setti
             archive_errors.pop(key, None)
 
     preferences = volume_preferences(settings)
+    layout, _ = preferences
     mangas = client.downloaded_mangas()
     failures = 0
     exported = 0
@@ -897,7 +901,7 @@ def run_once(client, root, previous=(), archive_errors=None, history=None, setti
                 key = (manga_id, filename)
                 try:
                     volume = assignments.get(row["id"])
-                    section = volume_folder(volume["number"] if volume else None) if preferences[0] else None
+                    section = volume_folder(volume["number"] if volume else None) if layout != "chapter" else None
                     destination = chapter_destination(directories, filename, section, existing)
                     if history and not destination.exists():
                         history.remember(manga, row, "waiting_archive")
@@ -914,10 +918,11 @@ def run_once(client, root, previous=(), archive_errors=None, history=None, setti
                         history.remember(manga, row, "archive_failed")
                     failures += 1
                     logging.error("manga %s chapter %s: %s", manga_id, selected[0]["id"], exc)
-            written, pack_failures = pack_complete_volumes(client, root, manga, chapters, directories, assignments,
-                                                           existing, history)
-            exported += written
-            failures += pack_failures
+            if layout == "volume-cbz":
+                written, pack_failures = pack_complete_volumes(client, root, manga, chapters, directories, assignments,
+                                                               existing, history)
+                exported += written
+                failures += pack_failures
         except (ArchiveError, KeyError, TypeError, ValueError) as exc:
             if history:
                 for row in completed:
