@@ -7,3 +7,7 @@
 5. **如实报告异常。** 队列确认只表示提交或下载状态，出队也可能是取消。下载失败、打包失败和归档服务未启用要分别说明。提交结果不确定时先查队列及章节，再决定是否重试。
 
 使用 `manga_volume_catalog` 查询卷资料。缺资料时先用 `search-publisher` 查找官方卷页面，再用 `verify-publisher` 核对目录和作品版本。`no-publisher-contents` 表示官网没给出逐话目录，继续保留未分卷状态。已挂载 OpenTomeDB 时可以另用 `opentome` 按 Bangumi ISBN 查询。下载后通过 `manga_komga_status` 读取真实路径与归档状态。
+
+## 核对源站卷目录
+
+用户提供 Manga Downloader 的 `list --json` 输出时，用 `manga_volume_catalog` 的 `inspect-source`，传入 `mangaId`、导出时使用的 `sourceUrl` 和 JSON 文本 `listingJson`。同一卷话号一致仅代表目录数字一致。继续使用 Studio 已核验的目录判断哪些话能合卷。

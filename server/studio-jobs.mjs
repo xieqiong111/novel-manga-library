@@ -15,7 +15,7 @@ export function studioJobRoute(method, pathname) {
     /^\/api\/manga\/[1-9]\d{0,9}(?:\/(chapters|komga|volume-catalog))?$/.test(pathname)
   if (method === 'POST') return ['/api/tasks', '/api/manga/downloads/cancel', '/api/library/verify'].includes(pathname) ||
     /^\/api\/tasks\/task_[a-f0-9]{16}\/(cancel|retry)$/.test(pathname) ||
-    /^\/api\/manga\/[1-9]\d{0,9}\/(komga|subscribe|volume-catalog)$/.test(pathname) ||
+    /^\/api\/manga\/[1-9]\d{0,9}\/(komga|subscribe|volume-catalog(?:\/source-listing)?)$/.test(pathname) ||
     /^\/api\/library\/lib_[a-f0-9]{16}\/verify$/.test(pathname)
   return false
 }

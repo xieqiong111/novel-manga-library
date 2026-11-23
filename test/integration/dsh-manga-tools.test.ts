@@ -4,6 +4,9 @@ import { Context } from '@deepseek-ai/cordis'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
 import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
 import type { PluginRuntime } from '../../src/runtime.js'
 import { registerMangaTools } from '../../src/tools/manga.js'
 import type { MangaKomga } from '../../server/manga-komga.mjs'
@@ -81,6 +84,32 @@ describe('native manga tools', () => {
       const definition = ctx.tools.get(name)
       expect(definition?.output.schema, name).toBeTruthy()
       expect(typeof definition?.execute, name).toBe('function')
+    }
+  })
+
+  it('delegates Manga Downloader inspection through the Studio job endpoint', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'dsh-source-listing-'))
+    try {
+      const tokenFile = path.join(root, 'job-token')
+      await writeFile(tokenFile, 'studio_jobs_' + 'a'.repeat(43), { mode: 0o600 })
+      vi.stubEnv('LN_STUDIO_JOB_TOKEN_FILE', tokenFile)
+      vi.stubEnv('LN_STUDIO_READ_URL', 'http://studio.test')
+      const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json({ volumes: [{ number: 1, comparison: 'matches' }] }))
+      vi.stubGlobal('fetch', fetch)
+      const sourceUrl = 'https://manga.example/series'
+      const listing = { title: '示例漫画', grabber: 'fixture', chapters: [{ number: 1, title: '第一话', volume: 1 }] }
+      const args = { action: 'inspect-source', mangaId: '22', sourceUrl }
+      expect(await call('manga_volume_catalog', { ...args, listingJson: '{' }))
+        .toMatchObject({ ok: false, error: { code: 'INVALID_SOURCE_LISTING' } })
+      expect(fetch).not.toHaveBeenCalled()
+      expect(await call('manga_volume_catalog', { ...args, listingJson: JSON.stringify(listing) }))
+        .toMatchObject({ ok: true, volumes: [{ number: 1, comparison: 'matches' }] })
+      expect(fetch).toHaveBeenCalledWith(new URL('/api/manga/22/volume-catalog/source-listing', 'http://studio.test'),
+        expect.objectContaining({ method: 'POST', body: JSON.stringify({ sourceUrl, listing }) }))
+    } finally {
+      vi.unstubAllGlobals()
+      vi.unstubAllEnvs()
+      await rm(root, { recursive: true, force: true })
     }
   })
 

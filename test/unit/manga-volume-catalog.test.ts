@@ -1,11 +1,11 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { expect, it, vi } from 'vitest'
 import { withBangumiArchiveRecovery } from '../../server/bangumi-komga.mjs'
 import { createMangaVolumeCatalogApi } from '../../server/manga-volume-api.mjs'
-import { mergeVolumeSources, saveMangaVolumeCatalog } from '../../server/manga-volume-catalog.mjs'
+import { mergeVolumeSources, saveMangaVolumeCatalog, volumeCatalogPath } from '../../server/manga-volume-catalog.mjs'
 import { readPublisherVolume } from '../../server/manga-publisher.mjs'
 import { openTomeVolumes } from '../../server/opentome-volumes.mjs'
 import { mangaVolumeGroups } from '../../web/src/data/mangaVolumes'
@@ -37,6 +37,56 @@ it('binds the reference catalog to the exact work and keeps unconfirmed mappings
     const persisted = await service.get('3502')
     expect(persisted.volumes).toEqual(result.volumes)
     expect(metadata).toHaveBeenCalledWith('related-volumes', { subjectId: 143035 }, undefined, undefined)
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+it('compares a CLI listing without changing the verified catalog or calling Bangumi', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'studio-source-listing-'))
+  try {
+    const downloadFoldersFile = path.join(root, 'folders.json')
+    await mkdir(path.join(root, 'bangumi-manga'))
+    await writeFile(path.join(root, 'bangumi-manga', '3502.json'), JSON.stringify({
+      mangaId: sample.id, sourceId: sample.sourceId, subjectId: 143035, title: sample.title,
+    }))
+    await saveMangaVolumeCatalog(downloadFoldersFile, sample, { subjectId: 143035 })
+    const catalogFile = volumeCatalogPath(downloadFoldersFile, sample.id)
+    const contents = await readFile(catalogFile, 'utf8')
+    const metadata = vi.fn()
+    const service = createMangaVolumeCatalogApi({ settings: { config: { downloadFoldersFile } },
+      mangaClient: { getManga: async () => sample }, metadata })
+    const listing = { title: sample.title, grabber: 'fixture', chapters: [
+      ...[1, 2, 3, 4, 5].map((number) => ({ id: String(number), title: '', number, volume: 1 })),
+      { title: '第六话', number: 6, volume: 2 },
+      { id: 'different-release', title: '另一译本', number: 6, language: 'zh-Hant' },
+      { title: '错误卷号', number: 9, volume: 3 },
+      { title: '卷外章节', number: 999, volume: 999, locked: true },
+    ] }
+    const inspect = (sourceUrl = sample.url, exportData = listing) =>
+      service.inspectSourceListing(sample.id, { sourceUrl, listing: exportData })
+    const result = await inspect()
+    expect(result).toMatchObject({ sourceId: sample.sourceId, unassigned: 1 })
+    expect(result.volumes.map((row) => [row.number, row.comparison])).toEqual([
+      [1, 'matches'], [2, 'ambiguous'], [3, 'differs'], [999, 'unverified'],
+    ])
+    expect(result.volumes[2]).toMatchObject({ extra: ['9'] })
+    expect(result.volumes[2].missing.length).toBeGreaterThan(0)
+    expect(result.volumes[3].releases[0]).toMatchObject({ locked: true, number: '999' })
+    await expect(inspect(sample.url + '?id=other')).rejects.toMatchObject({ code: 'VOLUME_SOURCE_MISMATCH' })
+    await expect(inspect(sample.url, { ...listing, title: '不同版本' })).rejects.toMatchObject({
+      code: 'VOLUME_SOURCE_TITLE_MISMATCH',
+    })
+    await expect(inspect(sample.url, { ...listing, chapters: [{ title: 'Invalid', number: -1 }] }))
+      .rejects.toMatchObject({ code: 'INVALID_SOURCE_LISTING' })
+    await expect(inspect(sample.url, { ...listing, chapters: [{ title: '无卷号', number: 1 }] }))
+      .resolves.toMatchObject({ unassigned: 1, volumes: [] })
+
+    const queryUrl = sample.url + '?edition=2'
+    const queryService = createMangaVolumeCatalogApi({ settings: { config: { downloadFoldersFile } },
+      mangaClient: { getManga: async () => ({ ...sample, url: queryUrl }) }, metadata })
+    const queryResult = await queryService.inspectSourceListing(sample.id, { sourceUrl: queryUrl, listing })
+    expect(queryResult.volumes[0]).toMatchObject({ comparison: 'unverified' })
+    expect(await readFile(catalogFile, 'utf8')).toBe(contents)
+    expect(metadata).not.toHaveBeenCalled()
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 

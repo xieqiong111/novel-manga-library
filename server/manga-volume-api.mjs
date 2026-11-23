@@ -4,6 +4,7 @@ import { bindMangaTitle, readMangaBangumiBinding, resolveDownloadSubject } from 
 import { sameBangumiTitle } from './bangumi-title.mjs'
 import { bangumiCoverUrl } from './bangumi-cover.mjs'
 import { mangaVolumePreferences, publishedMangaVolumes, readVolumeCatalog, saveMangaVolumeCatalog } from './manga-volume-catalog.mjs'
+import { auditMangaSourceListing, sourceListingWorkUrl } from './manga-source-listing.mjs'
 import { findPublisherVolumes, readPublisherVolume } from './manga-publisher.mjs'
 import { openTomeVolumes } from './opentome-volumes.mjs'
 
@@ -88,6 +89,14 @@ export function createMangaVolumeCatalogApi({ settings, mangaClient, metadata, f
     return { enabled: config.enabled, sources: config.sources, openTomeConfigured: Boolean(process.env.LN_OPENTOME_SQLITE),
       bound: Boolean(record), volumes: (record?.volumes ?? []).filter((entry) => config.sources.includes(entry.source)),
       volumeMetadata: record?.volumeMetadata ?? [] }
+  }
+
+  async function inspectSourceListing(mangaId, input) {
+    const [manga, match, config] = await Promise.all([mangaClient.getManga(mangaId), matchedCatalog(file, mangaId), preferences()])
+    const record = match?.record
+    const volumes = record?.sourceId === String(manga.sourceId) && sourceListingWorkUrl(record.workUrl) === sourceListingWorkUrl(manga.url)
+      ? (record.volumes ?? []).filter((row) => config.sources.includes(row.source)) : []
+    return auditMangaSourceListing(manga, input, volumes)
   }
 
   async function edition(mangaId, number, cover = false) {
@@ -200,5 +209,5 @@ export function createMangaVolumeCatalogApi({ settings, mangaClient, metadata, f
     })
   }
 
-  return { get, edition, update, prepare, volumeSubject, rememberVolume, isEnabled: async () => (await preferences()).enabled }
+  return { get, edition, update, prepare, inspectSourceListing, volumeSubject, rememberVolume, isEnabled: async () => (await preferences()).enabled }
 }

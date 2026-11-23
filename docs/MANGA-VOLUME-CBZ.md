@@ -36,6 +36,18 @@ Studio 先绑定 Bangumi 漫画系列和 Suwayomi 的确切来源与作品。出
 
 《为美好的世界献上祝福！》示例的正篇目录使用 [第 1–20 卷参考目录](https://it.wikipedia.org/wiki/Capitoli_di_Konosuba!_-_This_Wonderful_World) 和 [第 21 卷出版社试读](https://yenpress.com/titles/9798855433692-konosuba-god-s-blessing-on-this-wonderful-world-vol-21-manga)。第 22–23 卷的 [参考话号](https://konosuba.fandom.com/wiki/Category:Konosuba_Chapters) 目前标为待核验。
 
+### 导入 Manga Downloader 源站卷目录
+
+在已有 Manga Downloader 的设备上，使用 Suwayomi 当前漫画条目的原始作品网址导出章节 JSON。以下命令适用于 v25.3.0。
+
+```sh
+manga-downloader list --json '当前源站的作品网址' > '卷目录.json'
+```
+
+在漫画详情切换到「按单行本查看」，展开「导入 Manga Downloader 源站卷目录」，填入导出时使用的同一个网址，再选择 JSON 文件（最大 512 KiB）。Studio 会显示源站给出的卷、话号和版本信息，并列出比已核验卷目录多出或缺少的话。遇到重复话号、无话号或源站没提供卷号时，界面会标明情况。
+
+核对结果只供查看，自动合卷和 Bangumi 分卷刮削继续使用已核验目录。Studio 无须安装 CLI。源站覆盖和卷号支持取决于 [Manga Downloader 对应版本的适配器](https://github.com/elboletaire/manga-downloader/tree/v25.3.0/grabber)。
+
 ### 卷目录 API
 
 | 请求 | 用途 |
@@ -43,6 +55,7 @@ Studio 先绑定 Bangumi 漫画系列和 Suwayomi 的确切来源与作品。出
 | `GET /api/manga/:id/volume-catalog` | 查看来源、目录、核验状态和 Bangumi 单行本 |
 | `GET /api/manga/:id/volume-catalog?volume=1` | 查看第 1 卷对应的 Bangumi 资料 |
 | `GET /api/manga/:id/volume-catalog?volume=1&asset=cover` | 读取已匹配卷的 Bangumi 封面 |
+| `POST /api/manga/:id/volume-catalog/source-listing`，请求体为 `{sourceUrl, listing}` | 比较导出的 JSON 对象与已核验话号，返回逐卷结果、`missing` 和 `extra` |
 | `POST /api/manga/:id/volume-catalog` ，`action: "resolve"` | 绑定作品并载入参考目录与关联单行本 |
 | 同上，`action: "opentome", volume: 1` | 用指定卷的 Bangumi ISBN 匹配 SQLite 版本 |
 | 同上，`action: "search-publisher", volume: 21` | 查找 Yen Press 和 KADOKAWA 的官方候选页面 |

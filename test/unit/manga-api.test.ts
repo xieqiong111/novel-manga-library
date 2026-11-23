@@ -40,6 +40,25 @@ function responseSink() {
 describe('Suwayomi BFF routes', () => {
   const logger = { warn: vi.fn(), error: vi.fn() }
 
+  it('routes only bounded JSON to the read-only source listing comparison', async () => {
+    const inspectSourceListing = vi.fn(async () => ({ volumes: [], unassigned: 1 }))
+    const api = createMangaApi({}, logger, { mangaVolumes: { inspectSourceListing } })
+    const pathname = '/api/manga/3502/volume-catalog/source-listing'
+    const post = async (body: object) => {
+      const res = responseSink()
+      await api(request('POST', pathname, { contentType: 'application/json', body }), res, new URL(pathname, 'http://localhost'))
+      return res
+    }
+    const input = { sourceUrl: 'https://manga.example/series', listing: { title: '作品', grabber: 'fixture', chapters: [] } }
+    const response = await post(input)
+    expect(response.status).toBe(200)
+    expect(response.json()).toEqual({ volumes: [], unassigned: 1 })
+    expect(inspectSourceListing).toHaveBeenCalledWith('3502', input)
+    const oversized = await post({ ...input, listing: 'x'.repeat(530_000) })
+    expect(oversized.status).toBe(413)
+    expect(inspectSourceListing).toHaveBeenCalledOnce()
+  })
+
   it('returns NAS locations only for archives present under the configured storage root', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'studio-locations-'))
     try {

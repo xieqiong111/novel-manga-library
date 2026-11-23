@@ -48,12 +48,24 @@ export interface MangaVolumeCatalog {
   volumes: { number: number; chapters: string[]; source: string; url: string; confirmed: boolean; conflict?: boolean }[]
   volumeMetadata: { number: number; subjectId: number; isbn?: string; date?: string }[]
 }
+export interface MangaSourceListing {
+  unassigned: number
+  volumes: Array<{
+    number: number
+    comparison: 'matches' | 'differs' | 'ambiguous' | 'unverified'
+    missing: string[]
+    extra: string[]
+    releases: Array<{ number: string | null; id: string | null; name: string; language: string; group: string; locked: boolean }>
+  }>
+}
 export const mangaVolumeApi = {
   get: (id: string) => apiFetch<MangaVolumeCatalog>(mangaPath(id) + '/volume-catalog'),
   edition: (id: string, number: number) => apiFetch<{ number: number; subjectId: number; title: string;
     isbn: string | null; date: string | null; summary: string; summarySource: 'bangumi' | 'translation' | 'series' | null;
     hasCover: boolean }>(`${mangaPath(id)}/volume-catalog?volume=${number}`),
   coverPath: (id: string, number: number) => `${mangaPath(id)}/volume-catalog?volume=${number}&asset=cover`,
+  inspectSource: (id: string, sourceUrl: string, listing: unknown) =>
+    apiFetch<MangaSourceListing>(mangaPath(id) + '/volume-catalog/source-listing', jsonPost({ sourceUrl, listing })),
   resolve: (id: string, action: 'resolve' | 'opentome', volume?: number) =>
     apiFetch<MangaVolumeCatalog>(mangaPath(id) + '/volume-catalog', jsonPost({ action, volume })),
 }

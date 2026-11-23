@@ -247,21 +247,35 @@ export function registerMangaTools(ctx, runtime, komga = runtime.mangaKomga) {
     }));
     ctx.tools.register(defineTool({
         name: 'manga_volume_catalog',
-        description: 'Inspect or update a Studio manga volume catalog. Use resolve for Bangumi relations; opentome for ISBN-based lookup; search-publisher to discover official pages; verify-publisher to check a candidate and save chapters only if the work and edition match. If a publisher omits the contents, report it and leave the chapter unassigned. This tool does not download or package files.',
+        description: 'Inspect or update a Studio manga volume catalog. Use resolve for Bangumi relations; opentome for ISBN-based lookup; search-publisher to discover official pages; verify-publisher to check a candidate and save chapters only if the work and edition match. Use inspect-source to compare user-supplied Manga Downloader listing JSON with already verified volumes. This comparison does not download, package, or change the archive catalog.',
         parameters: {
             mangaId: { type: 'string', required: true, description: 'Exact Suwayomi manga ID.' },
-            action: { type: 'string', description: 'get, resolve, opentome, search-publisher, or verify-publisher. Default get.' },
+            action: { type: 'string', description: 'get, resolve, opentome, search-publisher, verify-publisher, or inspect-source. Default get.' },
             volume: { type: 'number', description: 'Single volume number for source lookup or verification.' },
             bangumiSubjectId: { type: 'number', description: 'Confirmed Bangumi series ID if the manga has no binding.' },
             sourceTitle: { type: 'string', description: 'Exact source title, only after independently checking that an unlisted alias identifies the same edition.' },
             publisherUrl: { type: 'string', description: 'Official Yen Press or KADOKAWA product URL returned by publisher search or found in official sources.' },
+            sourceUrl: { type: 'string', description: 'Exact Suwayomi series URL used to export the listing for inspect-source.' },
+            listingJson: { type: 'string', description: 'Manga Downloader list --json output supplied by the user for inspect-source.' },
         },
         output: jsonOutput(),
-        async execute({ mangaId, action = 'get', ...body }) {
+        async execute({ mangaId, action = 'get', sourceUrl, listingJson, ...body }) {
             return runMangaTool(runtime, 'manga_volume_catalog', async () => {
                 if (!studioDelegated())
                     return { ok: false, error: { code: 'STUDIO_REQUIRED', message: '请连接 Studio 任务 API 查询卷目录。' } };
                 const pathname = `/api/manga/${encodeURIComponent(mangaId.trim())}/volume-catalog`;
+                if (action === 'inspect-source') {
+                    let listing;
+                    try {
+                        if (!sourceUrl || !listingJson || Buffer.byteLength(listingJson) > 512 * 1024)
+                            throw new Error();
+                        listing = JSON.parse(listingJson);
+                    }
+                    catch {
+                        return { ok: false, error: { code: 'INVALID_SOURCE_LISTING', message: '请提供作品地址与有效的 Manga Downloader JSON 目录。' } };
+                    }
+                    return ok(await studioJob(`${pathname}/source-listing`, { method: 'POST', body: { sourceUrl, listing } }));
+                }
                 const result = action === 'get' ? await studioJob(pathname)
                     : await studioJob(pathname, { method: 'POST', body: { action, ...body } });
                 return ok(result);

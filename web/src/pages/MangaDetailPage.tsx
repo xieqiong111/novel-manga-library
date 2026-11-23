@@ -8,6 +8,7 @@ import { Modal } from '@/components/common/Modal'
 import { useToast } from '@/components/common/Toast'
 import { MangaCover, mangaDate, mangaSource, mangaStatus } from '@/components/manga/MangaCard'
 import { MangaNotice } from '@/components/manga/MangaNotice'
+import { SourceVolumeListing } from '@/components/manga/SourceVolumeListing'
 import { useAsync } from '@/hooks/useAsync'
 import { chaptersForVolumeView, mangaApi, mangaKomgaApi, mangaVolumeApi, type KomgaChapter } from '@/services/mangaApi'
 import { mangaVolumeGroups } from '@/data/mangaVolumes'
@@ -234,6 +235,7 @@ function MangaDetail({ id }: { id: string }) {
                   {catalog.error && <span role="alert" className="text-negative">{catalog.error}</span>}
                 </div>
               )}
+              {IS_LIVE && volumeMode && !localSource && manga.url && <SourceVolumeListing key={id} mangaId={id} workUrl={manga.url} />}
               {volumeMode && (Boolean(catalog.data?.volumeMetadata.length) || (volumePage.data && !currentLoading && !currentError)) && (
                 volumes.groups.length ? (
                   <div className="mt-3 space-y-2 rounded-xl border border-line p-3">

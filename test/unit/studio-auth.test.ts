@@ -233,6 +233,8 @@ it('accepts the separate Studio jobs key for job routes only', async () => {
     expect(await request('GET', '/api/tasks', token.slice(0, -1) + 'x')).toBe(403)
     expect(studioJobRoute('GET', '/api/library/lib_0123456789abcdef/file')).toBe(true)
     expect(studioJobRoute('POST', '/api/manga/22/komga')).toBe(true)
+    expect(studioJobRoute('POST', '/api/manga/22/volume-catalog/source-listing')).toBe(true)
+    expect(studioJobRoute('POST', '/api/manga/22/volume-catalog/source-listing/other')).toBe(false)
   } finally {
     await rm(dir, { recursive: true, force: true })
   }

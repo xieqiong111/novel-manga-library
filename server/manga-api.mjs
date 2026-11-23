@@ -2,6 +2,7 @@ import { SuwayomiError } from './suwayomi-client.mjs'
 import { createMangaKomga } from './manga-komga.mjs'
 import { createMangaArchiveHistory } from './manga-volume-client.mjs'
 import { MetadataError } from './bangumi-komga.mjs'
+import { maxSourceListingBytes } from './manga-source-listing.mjs'
 
 const MAX_BODY = 16 * 1024
 
@@ -59,20 +60,20 @@ function intParam(params, name, fallback, min, max) {
   return value
 }
 
-async function readJson(req) {
+async function readJson(req, limit = MAX_BODY) {
   const contentType = String(req.headers['content-type'] ?? '').split(';', 1)[0].trim().toLowerCase()
   if (contentType !== 'application/json') {
     throw new MangaApiError(415, 'UNSUPPORTED_MEDIA_TYPE', 'Content-Type must be application/json')
   }
   const declared = Number(req.headers['content-length'] ?? 0)
-  if (Number.isFinite(declared) && declared > MAX_BODY) {
-    throw new MangaApiError(413, 'BODY_TOO_LARGE', 'Request body exceeds 16 KB')
+  if (Number.isFinite(declared) && declared > limit) {
+    throw new MangaApiError(413, 'BODY_TOO_LARGE', `Request body exceeds ${limit / 1024} KiB`)
   }
   const chunks = []
   let size = 0
   for await (const chunk of req) {
     size += chunk.length
-    if (size > MAX_BODY) throw new MangaApiError(413, 'BODY_TOO_LARGE', 'Request body exceeds 16 KB')
+    if (size > limit) throw new MangaApiError(413, 'BODY_TOO_LARGE', `Request body exceeds ${limit / 1024} KiB`)
     chunks.push(chunk)
   }
   if (chunks.length === 0) return {}
@@ -138,6 +139,14 @@ export function createMangaApi(client, logger = { warn() {} },
       else if (segments[0] === 'search') limitRequest(req, 'search', 10)
       else if (segments.length === 2 && segments[1] === 'cover') limitRequest(req, 'cover', 200)
       else limitRequest(req, 'read', 120)
+
+      if (mangaVolumes && method === 'POST' && segments.length === 3 &&
+          segments[1] === 'volume-catalog' && segments[2] === 'source-listing') {
+        const mangaId = requiredId(segments[0], 'mangaId')
+        const input = await readJson(req, maxSourceListingBytes + 2048)
+        sendJson(res, 200, await mangaVolumes.inspectSourceListing(mangaId, input))
+        return true
+      }
 
       if (mangaVolumes && segments.length === 2 && segments[1] === 'volume-catalog') {
         const mangaId = requiredId(segments[0], 'mangaId')
