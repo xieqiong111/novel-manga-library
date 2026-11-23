@@ -41,6 +41,8 @@ interface ScrapingStatus {
     hasAccessToken: boolean
     hasSavedAccessToken: boolean
     proxyUrl?: string
+    proxyUsername?: string
+    hasProxyPassword?: boolean
   }
 }
 
@@ -88,6 +90,9 @@ function ScrapingForms({ initial }: { initial: ScrapingStatus }) {
   const [accessToken, setAccessToken] = useState('')
   const [editingAccessToken, setEditingAccessToken] = useState(false)
   const [proxyUrl, setProxyUrl] = useState(initial.bangumi.proxyUrl ?? '')
+  const [proxyUsername, setProxyUsername] = useState(initial.bangumi.proxyUsername ?? '')
+  const [proxyPassword, setProxyPassword] = useState('')
+  const [clearProxyPassword, setClearProxyPassword] = useState(false)
   const [testResult, setTestResult] = useState<{ message: string; success: boolean } | null>(null)
   const [saving, setSaving] = useState<'scrape' | 'bangumi' | 'bangumi-test' | null>(null)
   const [error, setError] = useState('')
@@ -97,8 +102,16 @@ function ScrapingForms({ initial }: { initial: ScrapingStatus }) {
     postDownloadScrape !== Boolean(status.preferences.postDownloadScrape) ||
     JSON.stringify(options) !== JSON.stringify(status.preferences.scrapeOptions ?? defaultOptions)
   const showTokenMask = status.bangumi.hasAccessToken && !editingAccessToken
+  const address = proxyUrl.trim()
+  const sameProxy = Boolean(address && URL.canParse(address) && new URL(address).origin === status.bangumi.proxyUrl)
+  const savedPasswordApplies = sameProxy && proxyUsername === status.bangumi.proxyUsername && status.bangumi.hasProxyPassword
+  const proxyDraft = { proxyUrl: address, ...(address ? {
+    proxyUsername, ...(proxyPassword && proxyUsername ? { proxyPassword } : {}),
+    ...(clearProxyPassword && savedPasswordApplies ? { clearProxyPassword: true } : {}),
+  } : {}) }
   const bangumiChanged = sourceMode !== status.bangumi.sourceMode || Boolean(accessToken.trim()) ||
-    proxyUrl.trim() !== (status.bangumi.proxyUrl ?? '')
+    address !== (status.bangumi.proxyUrl ?? '') || (Boolean(address) && proxyUsername !== (status.bangumi.proxyUsername ?? '')) ||
+    Boolean(proxyDraft.proxyPassword || proxyDraft.clearProxyPassword)
 
   async function testBangumi() {
     setSaving('bangumi-test')
@@ -108,7 +121,7 @@ function ScrapingForms({ initial }: { initial: ScrapingStatus }) {
       const token = accessToken.trim()
       const result = await apiFetch<BangumiProbe>(endpoint, {
         method: 'POST', body: JSON.stringify({
-          action: 'test-bangumi-connection', proxyUrl: proxyUrl.trim(), ...(token ? { accessToken: token } : {}),
+          action: 'test-bangumi-connection', ...proxyDraft, ...(token ? { accessToken: token } : {}),
         }),
       })
       const route = result.viaProxy ? '通过代理' : '直连'
@@ -132,7 +145,7 @@ function ScrapingForms({ initial }: { initial: ScrapingStatus }) {
         : {
             action: 'save-bangumi-settings', sourceMode: clearAccessToken ? status.bangumi.sourceMode : sourceMode,
             ...(clearAccessToken ? { clearAccessToken: true }
-              : { proxyUrl: proxyUrl.trim(), ...(token ? { accessToken: token } : {}) }),
+              : { ...proxyDraft, ...(token ? { accessToken: token } : {}) }),
           }
       const next = await apiFetch<ScrapingStatus>(endpoint, { method: 'POST', body: JSON.stringify(body) })
       setStatus(next)
@@ -140,7 +153,12 @@ function ScrapingForms({ initial }: { initial: ScrapingStatus }) {
         setAccessToken('')
         setEditingAccessToken(false)
         if (clearAccessToken) setTestResult(null)
-        else setProxyUrl(next.bangumi.proxyUrl ?? '')
+        else {
+          setProxyUrl(next.bangumi.proxyUrl ?? '')
+          setProxyUsername(next.bangumi.proxyUsername ?? '')
+          setProxyPassword('')
+          setClearProxyPassword(false)
+        }
       } else setOptions(next.preferences.scrapeOptions ?? defaultOptions)
       toast({ tone: 'success', title: section === 'scrape' ? '刮削设置已保存' : 'Bangumi 配置已保存' })
     } catch (failure) {
@@ -287,13 +305,31 @@ function ScrapingForms({ initial }: { initial: ScrapingStatus }) {
             <div>
               <label className="block text-sm text-ink-soft">Bangumi 代理地址（可选）
                 <input type="text" name="bangumi-proxy-url" autoComplete="off" className={input}
-                  value={proxyUrl} onChange={(event) => { setProxyUrl(event.target.value); setTestResult(null) }}
+                  value={proxyUrl} onChange={(event) => { setProxyUrl(event.target.value); setClearProxyPassword(false); setTestResult(null) }}
                   maxLength={512} placeholder="http://192.168.1.10:7890" aria-describedby="bangumi-proxy-help"
                   disabled={busy || !status.bangumi.managed} />
               </label>
               <p id="bangumi-proxy-help" className="mt-2 text-xs leading-relaxed text-ink-soft">
                 填写 Studio 容器可访问的 HTTP(S) 代理地址。留空则直连。连接测试使用当前输入的配置。
               </p>
+              <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                <label className="block text-sm text-ink-soft">代理账号（可选）
+                  <input type="text" name="bangumi-proxy-username" autoComplete="off" className={input} value={proxyUsername}
+                    maxLength={256} disabled={busy || !status.bangumi.managed || !address}
+                    onChange={(event) => { setProxyUsername(event.target.value); setClearProxyPassword(false); setTestResult(null) }} />
+                </label>
+                <label className="block text-sm text-ink-soft">代理密码（可选）
+                  <input type="password" name="bangumi-proxy-password" autoComplete="new-password" className={input} value={proxyPassword}
+                    maxLength={512} placeholder={savedPasswordApplies && !clearProxyPassword ? '已保存，留空沿用' : '输入代理密码'}
+                    disabled={busy || !status.bangumi.managed || !address || !proxyUsername || clearProxyPassword}
+                    onChange={(event) => { setProxyPassword(event.target.value); setTestResult(null) }} />
+                </label>
+              </div>
+              {savedPasswordApplies && <label className="mt-2 flex items-center gap-2 text-xs text-ink-soft">
+                <input type="checkbox" className="accent-accent" checked={clearProxyPassword} disabled={busy || !status.bangumi.managed}
+                  onChange={(event) => { setClearProxyPassword(event.target.checked); setProxyPassword(''); setTestResult(null) }} />
+                清除已保存的代理密码
+              </label>}
             </div>
             <div className="flex flex-wrap gap-2">
               <Button type="submit" size="sm" variant="primary" loading={saving === 'bangumi'}

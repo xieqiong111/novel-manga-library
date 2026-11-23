@@ -8,7 +8,7 @@ import string
 import sys
 import time
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 # Keep the upstream log handler off the JSON response stream.
 reply_stream = sys.stdout
@@ -40,11 +40,15 @@ class ApiError(Exception):
         self.code = code
 
 
-def bangumi_session(proxy_url):
+def bangumi_session(proxy_url, proxy_username="", proxy_password=""):
     session = requests.Session()
     session.trust_env = False
     session.headers["User-Agent"] = USER_AGENT
     if proxy_url:
+        if proxy_username:
+            proxy = urlsplit(proxy_url)
+            credentials = f"{quote(proxy_username, safe='')}:{quote(proxy_password, safe='')}"
+            proxy_url = proxy._replace(netloc=f"{credentials}@{proxy.netloc}").geturl()
         session.proxies["https"] = proxy_url
     return session
 
@@ -61,9 +65,9 @@ def read_bytes(response, limit):
 class Bangumi:
     provenance = {"source": "bangumi-live"}
 
-    def __init__(self, access_token="", proxy_url=""):
-        self.proxy_url = proxy_url
-        self.session = bangumi_session(proxy_url)
+    def __init__(self, access_token="", proxy_url="", proxy_username="", proxy_password=""):
+        self.proxy = (proxy_url, proxy_username, proxy_password)
+        self.session = bangumi_session(*self.proxy)
         self.session.headers["Accept"] = "application/json"
         token = access_token.strip()
         if token:
@@ -100,7 +104,7 @@ class Bangumi:
         if not valid:
             raise ApiError(502, "BANGUMI_INVALID_RESPONSE", "Bangumi 返回了无法识别的测试响应。")
         return {"connected": True, "authenticated": True if used_token else None,
-                "viaProxy": bool(self.proxy_url), "elapsedMs": round((time.monotonic() - started) * 1000)}
+                "viaProxy": bool(self.proxy[0]), "elapsedMs": round((time.monotonic() - started) * 1000)}
 
     def cover(self, url):
         if not isinstance(url, str) or len(url) > 500:
@@ -110,7 +114,7 @@ class Bangumi:
                 or not re.fullmatch(r"/pic/cover/[A-Za-z0-9_/-]+\.(?:jpe?g|png|webp)", parsed.path, re.IGNORECASE)):
             raise ApiError(502, "BANGUMI_COVER_INVALID", "Bangumi 封面地址无效。")
         # The image CDN only receives an image request, without the API bearer.
-        with bangumi_session(self.proxy_url) as session, session.get(
+        with bangumi_session(*self.proxy) as session, session.get(
             url, headers={"Accept": ", ".join(sorted(COVER_MIMES))},
             timeout=(3, 5), allow_redirects=False, stream=True,
         ) as response:
@@ -230,14 +234,14 @@ def metadata(bangumi, subject_id, kind, scope, options):
     return result
 
 
-def configured_source(mode, token, proxy_url=""):
+def configured_source(mode, token, proxy_url="", proxy_username="", proxy_password=""):
     if mode == "archive":
         directory = os.environ.get("BANGUMI_ARCHIVE_DIR")
         if not directory or not all((Path(directory) / file).is_file() for file in
                                     ("subject.jsonlines", "subject-relations.jsonlines")):
             raise ApiError(503, "BANGUMI_ARCHIVE_UNAVAILABLE", "尚未挂载 Bangumi 官方档案。")
         return Archive(directory)
-    return Bangumi(token, proxy_url)
+    return Bangumi(token, proxy_url, proxy_username, proxy_password)
 
 
 def dispatch(bangumi, operation, params):
@@ -282,20 +286,23 @@ def serve():
             request_id = request["id"]
             config = request.get("bangumi", {})
             mode = config.get("sourceMode") or ("archive" if os.environ.get("BANGUMI_ARCHIVE_DIR") else "live")
-            token = config.get("accessToken", "") if mode == "live" else ""
-            proxy_url = config.get("proxyUrl", "") if mode == "live" else ""
-            if (mode, token, proxy_url) != current:
-                selected = configured_source(mode, token, proxy_url)
+            connection = (mode, *(config.get(key, "") if mode == "live" else "" for key in
+                                  ("accessToken", "proxyUrl", "proxyUsername", "proxyPassword")))
+            if connection != current:
+                selected = configured_source(*connection)
                 if isinstance(bangumi, Bangumi):
                     bangumi.session.close()
                 bangumi = selected
-                current = (mode, token, proxy_url)
+                current = connection
             payload = dispatch(bangumi, request["operation"], request["params"])
             status = 200
         except ApiError as error:
             status, payload = error.status, {"error": {"code": error.code, "message": str(error)}}
-        except requests.exceptions.ProxyError:
-            status, payload = 502, {"error": {"code": "BANGUMI_PROXY_FAILED", "message": "代理连接失败，请核对地址及 NAS 的访问权限。"}}
+        except requests.exceptions.ProxyError as error:
+            if re.search(r"Tunnel connection failed:\s*407\b", str(error), re.IGNORECASE):
+                status, payload = 502, {"error": {"code": "BANGUMI_PROXY_AUTH_FAILED", "message": "代理需要有效的账号和密码（HTTP 407）。"}}
+            else:
+                status, payload = 502, {"error": {"code": "BANGUMI_PROXY_FAILED", "message": "代理连接失败，请核对地址及 NAS 的访问权限。"}}
         except requests.exceptions.SSLError:
             status, payload = 502, {"error": {"code": "BANGUMI_TLS_FAILED", "message": "Bangumi 或 HTTPS 代理的证书验证失败。"}}
         except requests.Timeout:

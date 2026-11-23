@@ -123,6 +123,16 @@ it('scopes the DSH credential and never returns stored secrets', async () => {
     expect((await loadIntegrations(settings))?.bangumi).toEqual({
       sourceMode: 'live', accessToken: bangumi.accessToken, proxyUrl: 'http://proxy.example:7890',
     })
+    const credentials = { proxyUsername: 'fixture@example', proxyPassword: 'secret @: + / ?' }
+    const withProxyPassword = await (await send('POST', route, { ...bangumi, ...credentials }, cookie)).json()
+    expect(withProxyPassword.bangumi).toMatchObject({ proxyUsername: credentials.proxyUsername, hasProxyPassword: true })
+    expect(JSON.stringify(withProxyPassword)).not.toContain(credentials.proxyPassword)
+    expect(JSON.stringify(withProxyPassword)).not.toContain('proxyPassword"')
+    expect((await loadIntegrations(settings))?.bangumi).toMatchObject(credentials)
+    for (const invalid of [
+      { proxyUrl: '', ...credentials }, { proxyUsername: '', proxyPassword: 'only-password' },
+      { proxyUsername: 'name:colon' }, { proxyPassword: 'newline\nrejected' },
+    ]) expect((await send('POST', route, { ...bangumi, ...invalid }, cookie)).status).toBe(400)
     expect((await send('POST', route, draft)).status).toBe(401)
     for (const invalid of ['file:///etc/passwd', 'http://user:password@proxy.example', 'http://proxy.example/path']) {
       expect((await send('POST', route, { ...draft, proxyUrl: invalid }, cookie)).status).toBe(400)
@@ -137,11 +147,22 @@ it('scopes the DSH credential and never returns stored secrets', async () => {
     expect((await send('POST', route, draft, cookie)).status).toBe(429)
     const unchanged = await (await send('GET', route, undefined, cookie)).json()
     expect(unchanged.bangumi.proxyUrl).toBe('http://proxy.example:7890')
+    expect(unchanged.bangumi).toMatchObject({ proxyUsername: credentials.proxyUsername, hasProxyPassword: true })
     expect(JSON.stringify(unchanged)).not.toContain(bangumi.accessToken)
     const cleared = await (await send('POST', route, { action: bangumi.action, sourceMode: 'archive', clearAccessToken: true }, cookie)).json()
     expect(cleared.bangumi).toMatchObject({
       sourceMode: 'archive', hasAccessToken: false, hasSavedAccessToken: false, proxyUrl: 'http://proxy.example:7890',
+      hasProxyPassword: true,
     })
+    const removedPassword = await (await send('POST', route,
+      { action: bangumi.action, sourceMode: 'archive', clearProxyPassword: true }, cookie)).json()
+    expect(removedPassword.bangumi).toMatchObject({ proxyUsername: credentials.proxyUsername, hasProxyPassword: false })
+    expect((await loadIntegrations(settings))?.bangumi).not.toHaveProperty('proxyPassword')
+    await send('POST', route, { ...bangumi, ...credentials }, cookie)
+    const changedAddress = await (await send('POST', route,
+      { ...bangumi, proxyUrl: 'https://other.example:8443', proxyUsername: credentials.proxyUsername }, cookie)).json()
+    expect(changedAddress.bangumi.hasProxyPassword).toBe(false)
+    expect((await loadIntegrations(settings))?.bangumi).not.toHaveProperty('proxyPassword')
     await send('POST', route, { action: bangumi.action, sourceMode: 'archive', proxyUrl: '' }, cookie)
     expect((await loadIntegrations(settings))?.bangumi.proxyUrl).toBe('')
     const preferences = { action: 'save-komga-preferences', scrapeEnabled: true, refreshMode: 'manual' }

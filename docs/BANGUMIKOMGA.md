@@ -35,9 +35,9 @@ Studio 在 Web 容器内运行 [BangumiKomga](https://github.com/chu-shen/Bangum
 
 「Bangumi 配置」可以选择官方实时 API 或已安装的官方离线档案，也可填写或清除用于实时 API 的 Bangumi 访问令牌。保存后页面持续显示已保存状态和掩码，刷新页面后仍可确认配置。点击「修改令牌」填写替代值。
 
-「Bangumi 代理地址」接受 Studio 所在容器可访问的 HTTP(S) 转发代理，如 `http://192.168.1.10:7890`。地址只填写协议、主机和端口。保存后，实时查询和 Bangumi 封面下载走该代理。留空时直连。
+「Bangumi 代理地址」接受 Studio 所在容器可访问的 HTTP(S) 转发代理，如 `http://192.168.1.10:7890`。地址只填写协议、主机和端口。需要 HTTP Basic 认证时，可在单独的「代理账号」和「代理密码」输入框填写。保存后，实时查询和 Bangumi 封面下载走该代理。地址留空时直连。
 
-「测试 Bangumi 连接」使用页面当前填写的代理和令牌。令牌输入框处于掩码状态或留空时，使用服务器已保存的值。测试不会保存草稿，也不会修改书库或切换数据源。提供令牌时验证 Bangumi 的认证接口。管理员也可通过 `POST /api/settings/integrations` 传入 `action: "test-bangumi-connection"`，以及可选的 `proxyUrl` 和 `accessToken`。用 `save-bangumi-settings` 保存 `proxyUrl`，提交空字符串清除代理。
+「测试 Bangumi 连接」使用当前填写的代理和令牌，测试过程不保存草稿。代理地址和账号相同时，密码留空沿用已保存的值。更换地址或账号后可重新填写密码。代理密码保存在服务端，页面只显示保存状态。管理员也可通过 `POST /api/settings/integrations` 传入 `action: "test-bangumi-connection"` 和可选的 `proxyUrl`、`proxyUsername`、`proxyPassword`、`accessToken`。用 `save-bangumi-settings` 保存，提交 `proxyUrl: ""` 清除代理及认证，或用 `clearProxyPassword: true` 单独清除密码。代理返回 HTTP 407 时，测试会提示检查代理账号和密码。
 
 「匹配与写入」参考 [BangumiKomga 配置模板](https://github.com/chu-shen/BangumiKomga/blob/3ce5304707e4b8860b48d701b03f89bf421bac7e/config/config.template.py)。设置由 Studio 保存，DSH 调用时自动读取。
 
