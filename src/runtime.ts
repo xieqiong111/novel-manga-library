@@ -6,6 +6,7 @@ import { Library } from './core/library.js'
 import { NovelService } from './core/novel-service.js'
 import { TaskStore } from './core/store.js'
 import { TaskManager } from './core/tasks.js'
+import { acquireWriterLease } from './core/writer-lease.js'
 import { SearchEngine } from './search.js'
 import { LocalIndex } from './sources/local-index.js'
 import { SourceRegistry } from './sources/registry.js'
@@ -37,6 +38,8 @@ export class PluginRuntime {
   readonly mangaKomga: MangaKomga
 
   private initPromise: Promise<void> | null = null
+  private releaseWriter?: () => void
+  private disposed = false
   private dartStatus: { available: boolean; runner: string | null; reason?: string } = {
     available: false,
     runner: null,
@@ -82,7 +85,13 @@ export class PluginRuntime {
 
   /** Idempotent, awaited by every tool before its first operation. */
   init(): Promise<void> {
-    this.initPromise ??= this.doInit()
+    if (this.disposed) return Promise.reject(new Error('Runtime is shutting down'))
+    this.initPromise ??= this.doInit().catch((error) => {
+      this.releaseWriter?.()
+      this.releaseWriter = undefined
+      this.initPromise = null
+      throw error
+    })
     return this.initPromise
   }
 
@@ -96,6 +105,10 @@ export class PluginRuntime {
       mkdir(this.config.tasksDir, { recursive: true }),
       mkdir(this.config.logsDir, { recursive: true }),
       mkdir(this.config.libraryDir, { recursive: true }),
+    ])
+    this.releaseWriter = await acquireWriterLease([
+      this.config.dataDir, this.config.tasksDir, this.config.libraryDir,
+      ...(this.config.novelStorageRoot && this.config.downloadFoldersFile ? [this.config.novelStorageRoot] : []),
     ])
     await this.index.load()
     this.dartStatus = await this.bridge.probe()
@@ -139,9 +152,16 @@ export class PluginRuntime {
   }
 
   async dispose(): Promise<void> {
-    await this.tasks.dispose()
-    this.logger.info('plugin', 'disposing', {})
-    await this.logger.flush()
-    await this.logger.close()
+    this.disposed = true
+    await this.initPromise?.catch(() => undefined)
+    try {
+      await this.tasks.dispose()
+      await this.fetcher.close()
+      this.logger.info('plugin', 'disposing', {})
+      await this.logger.close()
+    } finally {
+      this.releaseWriter?.()
+      this.releaseWriter = undefined
+    }
   }
 }

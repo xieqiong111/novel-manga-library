@@ -3,20 +3,10 @@
 # This service is the BFF + static host in one process:
 #   node server/serve.mjs   ->   /api/*  +  web/dist
 #
-# The WebUI calls the novel PluginRuntime and the shared Suwayomi client.
-# The agent runs independently through docker-compose.yml.
-#
-# Prerequisites on the host (all paths are relative to this repository root):
-#   1. node_modules      npm ci --omit=dev
-#   2. dist              npm run build            (TypeScript plugin)
-#   3. web/dist          cd web && VITE_API_MODE=live npm run build
-#   4. bnp_headless      linux binary from vendor/bili_novel_packer:
-#                        dart compile exe bin/headless.dart -o build/bnp_headless
-#                        (optional: without it the UI works, downloads report
-#                         dart.available=false instead of pretending to succeed)
-#   5. Docker network    docker network create --driver bridge \
-#                          --subnet 10.99.77.0/24 --gateway 10.99.77.1 \
-#                          dsh-lightnovel-net
+# Studio owns tasks and its library index. The DSH managed mode submits jobs here.
+# The image builds both front ends and the Dart engine from the checkout.
+# Create the storage paths and the Docker network before starting the service.
+# See docs/DEPLOY-NAS.md for the host directory configuration.
 #
 # Existing Suwayomi / novel only: docker compose -f docker-compose.web.yml up -d web
 # Managed Suwayomi: set SUWAYOMI_URL=http://suwayomi:4567, then run
@@ -27,22 +17,20 @@
 services:
   web:
     build:
-      context: ./docker/bangumikomga
+      context: .
+      target: studio
       args:
-        STUDIO_WEB_BASE: "${LN_WEB_IMAGE:-node:24-bookworm-slim}"
-    # Debian slim, not Alpine: the prebuilt Dart AOT binary is linked against
-    # glibc and cannot execute on musl. Use LN_WEB_IMAGE=dsh-plugin-lightnovel:1.0.0
-    # to reuse an image that already ships Node + the Dart core.
+        NODE_BASE: "${LN_WEB_IMAGE:-node:24-bookworm-slim}"
+        DART_VERSION: "3.13.7"
+        DART_CURL_OPTS: "${DART_CURL_OPTS:-}"
+        PUB_HOSTED_URL: "${PUB_HOSTED_URL:-https://pub.flutter-io.cn}"
     image: "${LN_STUDIO_WEB_IMAGE:-novel-manga-library-web:local}"
     platform: "${LN_WEB_PLATFORM:-linux/amd64}"
     container_name: "${LN_WEB_CONTAINER_NAME:-lightnovel-studio-web}"
-    # Node images have no entrypoint of their own; explicit node keeps the
-    # command readable and works for any Node 24 based image.
-    entrypoint: ["node"]
-    command: ["server/serve.mjs"]
     working_dir: /opt/lightnovel
     user: "${LN_UID:-1001}:${LN_GID:-1001}"
     restart: unless-stopped
+    stop_grace_period: 45s
 
     environment:
       LN_BFF_HOST: 0.0.0.0
@@ -101,19 +89,6 @@ services:
       - "${LN_NOVEL_STORAGE_HOST:-./data/novel-downloads}:/storage/novel"
       - "${LN_MANGA_STORAGE_HOST:-./data/manga-downloads}:/storage/manga"
       - "${LN_DOWNLOAD_SETTINGS_HOST:-./data/download-settings}:/storage-settings"
-      # Code and build artefacts are mounted read-only; rebuild on the host and
-      # restart the container, no image rebuild needed.
-      - "./server:/opt/lightnovel/server:ro"
-      - "./dist:/opt/lightnovel/dist:ro"
-      # Runtime-only dependencies (cheerio/opencc-js). Do not mount dev deps
-      # from another architecture; run npm ci on the Docker host instead.
-      - "./node_modules:/opt/lightnovel/node_modules:ro"
-      - "./package.json:/opt/lightnovel/package.json:ro"
-      - "./vendor:/opt/lightnovel/vendor:ro"
-      - "./test/fixtures:/opt/lightnovel/test/fixtures:ro"
-      - "./web/dist:/opt/lightnovel/web/dist:ro"
-      - "${LN_DART_BINARY_HOST:-./bnp_headless}:/opt/bnp/bnp_headless:ro"
-
     healthcheck:
       # The auth status endpoint is available before the account is created.
       test:

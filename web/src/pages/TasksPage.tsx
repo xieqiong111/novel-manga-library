@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import {
   CheckCircle2,
@@ -22,12 +22,13 @@ import { useAsync } from '@/hooks/useAsync'
 import type { UnifiedDownloadTask } from '@/types/manga'
 import { Modal } from '@/components/common/Modal'
 import { PageHeader } from '@/components/common/PageHeader'
+import { PageControls } from '@/components/common/PageControls'
 import { CoverArt } from '@/components/novel/CoverArt'
 import { useToast } from '@/components/common/Toast'
 import { useTasks, taskStore } from '@/services/taskStore'
-import { novelApi } from '@/services/novelApi'
+import { listTaskPage, novelApi, type TaskPage } from '@/services/novelApi'
 import { apiFetch, DEMO, IS_LIVE } from '@/services/runtime'
-import type { DownloadTask, TaskState } from '@/types'
+import type { DownloadTask, LibraryItem, TaskState } from '@/types'
 import { cn } from '@/services/utils'
 
 type TaskFilter = 'all' | 'unknown' | TaskState
@@ -43,7 +44,7 @@ const tabs: { id: TaskFilter; label: string }[] = [
 ]
 
 const stateMeta: Record<TaskState, { label: string; tone: 'violet' | 'green' | 'amber' | 'rose' | 'gray'; icon: JSX.Element }> = {
-  running: { label: '下载中', tone: 'violet', icon: <Loader2 className="h-3 w-3 animate-spin" /> },
+  running: { label: '进行中', tone: 'violet', icon: <Loader2 className="h-3 w-3 animate-spin" /> },
   queued: { label: '排队中', tone: 'amber', icon: <Clock3 className="h-3 w-3" /> },
   completed: { label: '已完成', tone: 'green', icon: <CheckCircle2 className="h-3 w-3" /> },
   failed: { label: '失败', tone: 'rose', icon: <XCircle className="h-3 w-3" /> },
@@ -59,7 +60,7 @@ interface SavedGroup {
 }
 
 export function TasksPage() {
-  const novels = useTasks()
+  const mockNovels = useTasks(!IS_LIVE)
   const type = useMediaFilter()
   const mangaTasks = useMangaTasks(type !== 'novel')
   const { toast } = useToast()
@@ -67,6 +68,37 @@ export function TasksPage() {
   const state = params.get('state')
   const tab = tabs.find((item) => item.id === state)?.id ?? 'all'
   const query = (params.get('q') ?? '').trim().toLowerCase()
+  const offset = Math.max(0, Number(params.get('offset')) || 0)
+  const [novelPage, setNovelPage] = useState<TaskPage | null>(null)
+  const [novelError, setNovelError] = useState<string | null>(null)
+  const [taskRefresh, setTaskRefresh] = useState(0)
+  const setOffset = (value: number) => setParams((previous) => {
+    const next = new URLSearchParams(previous)
+    if (value) next.set('offset', String(value))
+    else next.delete('offset')
+    return next
+  }, { replace: true })
+  useEffect(() => {
+    if (!IS_LIVE || type === 'manga') return
+    const controller = new AbortController()
+    let timer: number | undefined
+    const reload = async () => {
+      try {
+        const page = await listTaskPage({ offset, query, state: tab === 'all' ? undefined : tab, signal: controller.signal })
+        if (!controller.signal.aborted) {
+          setNovelPage(page)
+          setNovelError(null)
+        }
+      } catch (error) {
+        if (!controller.signal.aborted) setNovelError(error instanceof Error ? error.message : '读取轻小说任务失败')
+      } finally {
+        if (!controller.signal.aborted) timer = window.setTimeout(() => void reload(), 2000)
+      }
+    }
+    void reload()
+    return () => { controller.abort(); window.clearTimeout(timer) }
+  }, [type, offset, query, tab, taskRefresh])
+  const novels = IS_LIVE ? novelPage?.items ?? [] : mockNovels
   const [fileRefresh, setFileRefresh] = useState(0)
   const saved = useAsync(() => IS_LIVE
     ? apiFetch<{ files: SavedGroup[]; errors: string[] }>('/tasks/files')
@@ -78,7 +110,7 @@ export function TasksPage() {
     ...(type === 'manga' ? [] : novels.map((task): UnifiedDownloadTask => ({ type: 'novel', id: `novel:${task.id}`, task }))),
     ...[...mangaTasks.queue, ...mangaTasks.history].map((task): UnifiedDownloadTask => ({ type: 'manga', id: `manga:${task.id}`, task })),
   ]
-  const matching = tasks.filter(({ task }) => !query || task.title.toLowerCase().includes(query))
+  const matching = tasks.filter(({ task, type }) => IS_LIVE && type === 'novel' || !query || task.title.toLowerCase().includes(query))
   const filtered = tab === 'all' ? matching : matching.filter(({ task }) => task.state === tab)
   const archived = new Set(mangaTasks.history.flatMap((task) => task.archive?.file ? [task.archive.file] : []))
   const savedMatches = (saved.data?.files ?? []).filter((item) => type === 'all' || item.type === type)
@@ -88,12 +120,20 @@ export function TasksPage() {
     .filter((item) => item.files.length > 0 && (!query || item.title.toLowerCase().includes(query) ||
       item.files.some((file) => file.path.toLowerCase().includes(query))))
   const visibleFiles = tab === 'all' || tab === 'completed' ? savedMatches : []
-  const runningCount = tasks.filter(({ task }) => task.state === 'running').length
-  const completedCount = tasks.filter(({ task }) => task.state === 'completed').length
+  const base = IS_LIVE && type !== 'manga' ? novelPage?.counts : undefined
+  const countTasks = (state: TaskFilter, entries: UnifiedDownloadTask[]) => {
+    const local = entries.filter((entry) => (!IS_LIVE || entry.type !== 'novel') &&
+      (state === 'all' || entry.task.state === state)).length
+    if (!base || state === 'unknown') return local
+    return local + (state === 'all' ? Object.values(base).reduce((sum, count) => sum + count, 0) : base[state])
+  }
+  const runningCount = countTasks('running', tasks)
+  const completedCount = countTasks('completed', tasks)
 
   const cancel = async (task: DownloadTask) => {
     try {
       await novelApi.cancelTask(task.id)
+      setTaskRefresh((value) => value + 1)
       setCancelTarget(null)
       setDetail(null)
       toast({ tone: 'warning', title: '任务已取消', description: `${task.title} · 未完成的章节不会写入书库。` })
@@ -105,6 +145,7 @@ export function TasksPage() {
   const retry = async (task: DownloadTask) => {
     try {
       await novelApi.retryTask(task.id)
+      setTaskRefresh((value) => value + 1)
       toast({ tone: 'info', title: '已重新排队', description: `${task.title} 将从头开始重试。` })
     } catch (error) {
       toast({ tone: 'warning', title: '重试失败', description: error instanceof Error ? error.message : '未知错误' })
@@ -134,6 +175,7 @@ export function TasksPage() {
               onClick={() => {
                 if (type !== 'manga') taskStore.refresh()
                 if (type !== 'novel') mangaTasks.refresh()
+                setTaskRefresh((value) => value + 1)
                 setFileRefresh((value) => value + 1)
               }}
             >
@@ -147,11 +189,13 @@ export function TasksPage() {
       <input aria-label="搜索下载记录" placeholder="搜索作品或文件名" type="search"
         value={params.get('q') ?? ''} onChange={(event) => setParams((previous) => {
           const next = new URLSearchParams(previous)
+          next.delete('offset')
           if (event.target.value) next.set('q', event.target.value)
           else next.delete('q')
           return next
         }, { replace: true })}
         className="mb-4 block w-full max-w-sm rounded-full border border-line bg-surface px-4 py-2 text-sm text-ink" />
+      {type !== 'manga' && novelError && <div className="mb-4"><MangaNotice message={novelError} /></div>}
       {mangaTasks.error && <div className="mb-4"><MangaNotice message={`漫画下载队列不可用 · ${mangaTasks.error}`} /></div>}
       {mangaTasks.historyError && <div className="mb-4"><MangaNotice message={mangaTasks.historyError} /></div>}
       {mangaTasks.loading && <p role="status" className="mb-3 text-xs text-ink-soft"><Spinner /> 正在读取漫画队列…</p>}
@@ -160,8 +204,8 @@ export function TasksPage() {
 
       <div role="group" aria-label="任务状态" className="mb-5 flex flex-wrap items-center gap-2">
         {tabs.map((item) => {
-          const count = item.id === 'all' ? matching.length + savedMatches.length
-            : matching.filter(({ task }) => task.state === item.id).length + (item.id === 'completed' ? savedMatches.length : 0)
+          const count = countTasks(item.id, matching) +
+            (item.id === 'all' || item.id === 'completed' ? savedMatches.length : 0)
           return (
             <button
               key={item.id}
@@ -169,6 +213,7 @@ export function TasksPage() {
               aria-pressed={tab === item.id}
               onClick={() => setParams((previous) => {
                 const next = new URLSearchParams(previous)
+                next.delete('offset')
                 if (item.id === 'all') next.delete('state')
                 else next.set('state', item.id)
                 return next
@@ -187,7 +232,7 @@ export function TasksPage() {
         })}
       </div>
 
-      {filtered.length === 0 && visibleFiles.length === 0 ? (!mangaTasks.loading && !mangaTasks.error && !saved.loading && (
+      {filtered.length === 0 && visibleFiles.length === 0 ? (!mangaTasks.loading && !mangaTasks.error && !saved.loading && (!IS_LIVE || type === 'manga' || novelPage) && (
         <Card>
           <EmptyState
             icon={<Download className="h-6 w-6" />}
@@ -255,7 +300,7 @@ export function TasksPage() {
                   <Button variant="secondary" size="sm" onClick={() => setDetail(task)}>
                     任务详情
                   </Button>
-                  {(task.state === 'running' || task.state === 'queued') && (
+                  {(task.state === 'running' || task.state === 'queued') && task.taskState !== 'cancelling' && (
                     <>
                       {!IS_LIVE && (task.state === 'running' ? (
                         <Button
@@ -316,6 +361,8 @@ export function TasksPage() {
         </div>
       )}
 
+      {IS_LIVE && type !== 'manga' && novelPage && <PageControls label="轻小说任务" offset={offset}
+        total={novelPage.total} nextOffset={novelPage.nextOffset} onChange={setOffset} />}
       {mangaTasks.hasOlder && ['all', 'completed'].includes(tab) && <div className="mt-4 text-center">
         <Button size="sm" loading={mangaTasks.loadingHistory} onClick={() => void mangaTasks.loadMore()}>加载更多漫画完成记录</Button>
       </div>}
@@ -350,7 +397,7 @@ export function TasksPage() {
         <div className="px-6 py-5 text-[11.5px] leading-relaxed text-ink-soft">
           <p>
             「{cancelTarget?.title}」当前已完成 <span className="font-semibold text-accent">{cancelTarget?.percent}%</span>。
-            取消后未完成的章节将被丢弃，已生成的临时文件由后端清理。
+            当前执行安全退出后会显示已取消。已经完成入库的 EPUB 会保留。
           </p>
             <p className="mt-2 text-[10px] text-ink-muted">
               {IS_LIVE
@@ -364,6 +411,11 @@ export function TasksPage() {
 }
 
 function TaskDetailModal({ task, onClose }: { task: DownloadTask | null; onClose: () => void }) {
+  const { toast } = useToast()
+  const result = useAsync(() => IS_LIVE && task
+    ? apiFetch<{ id: string; artifacts: LibraryItem[] }>(`/tasks/${encodeURIComponent(task.id)}`)
+    : Promise.resolve(null), [task?.id])
+  const artifacts = result.data?.id === task?.id ? result.data?.artifacts ?? [] : []
   return (
     <Modal open={Boolean(task)} onClose={onClose} eyebrow="Task detail" title={task?.title} width="max-w-[560px]">
       {task && (
@@ -407,20 +459,21 @@ function TaskDetailModal({ task, onClose }: { task: DownloadTask | null; onClose
           </div>
 
           <div className="mt-4 rounded-[10px] border border-line px-3.5 py-3">
-            <p className="text-[10px] font-semibold text-ink">产物完整性</p>
-            <div className="mt-2 flex items-center justify-between gap-2 text-[10px] text-ink-soft">
-              <span className="truncate">{IS_LIVE ? (task.size ? `产物体积 ${task.size}` : '产物路径见书库') : `volume-${task.id}.epub`}</span>
-              <Badge tone={task.state === 'completed' ? 'green' : 'gray'}>
-                {task.state === 'completed' ? (task.origin === 'dsh' ? 'DSH 已完成' : IS_LIVE ? '已入库' : '校验通过') : '等待生成'}
-              </Badge>
-            </div>
+            <p className="text-[10px] font-semibold text-ink">入库文件</p>
+            {IS_LIVE ? (
+              result.loading ? <p className="mt-2 text-xs text-ink-soft">正在读取文件…</p>
+                : result.error ? <p className="mt-2 text-xs text-negative">{result.error}</p>
+                  : artifacts.length ? <ul className="mt-2 max-h-48 space-y-1 overflow-auto">
+                    {artifacts.map((file) => <li key={file.id} className="flex items-center justify-between gap-2 text-xs">
+                      <span className="break-all">{file.fileName} · {file.size}</span>
+                      <Button size="sm" onClick={() => void novelApi.downloadFile(file.id, file.fileName).catch((error: unknown) =>
+                        toast({ tone: 'warning', title: '下载失败', description: error instanceof Error ? error.message : '读取文件失败' }))}>
+                        下载
+                      </Button>
+                    </li>)}
+                  </ul> : <p className="mt-2 text-xs text-ink-soft">书库暂无可关联的 EPUB 文件。</p>
+            ) : <p className="mt-2 text-xs text-ink-soft">{`volume-${task.id}.epub`}</p>}
           </div>
-
-          <p className="mt-3 text-[9.5px] leading-relaxed text-ink-muted">
-            {IS_LIVE
-              ? '字段来自插件 TaskManager 记录（state / progress.percent / artifacts[].bytes），经 BFF 的 GET /api/tasks 投影，未做任何填充或伪造。'
-              : '字段对齐设计契约中的 state / progress.percent / progress.chaptersDone / artifacts[].integrity，当前为 Mock 展示。'}
-          </p>
         </div>
       )}
     </Modal>

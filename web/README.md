@@ -112,3 +112,11 @@ DSH 可将令牌保存在仅运行用户可读的文件中，并设置 `LN_STUDI
 [开发和验证](../docs/README.md#开发和验证)
 
 早期设计的截图和排版对照仍保存在 [web/docs](docs/COMPARISON.md)。
+
+### 轻小说列表分页
+
+`GET /api/library` 和 `GET /api/tasks` 有两种响应。旧调用省略 `offset` 时返回数组。`offset=0&limit=40` 返回 `items`、`total`、`offset`、`limit`、`nextOffset`。下一页沿用筛选并填入 `nextOffset`，值为 `null` 时结束。单页最大 200 条。
+
+- 书库支持 `query`、`integrity=ok|failed|unknown` 和 `sort=recent|name|size`。
+- 任务支持 `query`、`state` 和 `sort=recent|oldest`，分页响应附带按显示状态汇总的 `counts`。任务字段 `state` 保留旧前端使用的状态分组，`taskState` 返回实际执行状态。
+- 任务详情按任务关联查询入库文件，可找回第一页以外的 EPUB。

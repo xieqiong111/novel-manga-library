@@ -1,4 +1,23 @@
-import { assertSafePublicUrl, UrlViolation } from './paths.js';
+import { lookup } from 'node:dns';
+import { Agent } from 'undici';
+import { assertSafePublicUrl, isPrivateHost, UrlViolation } from './paths.js';
+const MAX_PUBLIC_BODY = 8 * 1024 * 1024;
+const MAX_ROBOTS_BODY = 512 * 1024;
+// This lookup supplies the checked addresses directly to the connection. A separate DNS preflight
+// would allow the hostname to resolve again between validation and connection.
+const publicLookup = (host, options, callback) => {
+    lookup(host, { ...options, all: true }, (error, addresses) => {
+        if (error)
+            return callback(error, '');
+        if (!addresses.length || addresses.some(({ address }) => isPrivateHost(address))) {
+            return callback(new UrlViolation('Public source resolved to a non-public address'), '');
+        }
+        if (options.all)
+            callback(null, addresses);
+        else
+            callback(null, addresses[0].address, addresses[0].family);
+    });
+};
 /**
  * Read-only, credential-free HTTP client for public source pages.
  *
@@ -13,14 +32,14 @@ export class PoliteFetcher {
     queues = new Map();
     robots = new Map();
     opts;
+    dispatcher = new Agent({ connect: { lookup: publicLookup } });
     constructor(opts) {
         this.opts = opts;
     }
     async getBuffer(rawUrl, allowedHosts) {
         let url = assertSafePublicUrl(rawUrl, allowedHosts);
         for (let hop = 0; hop < 4; hop++) {
-            await this.before(url);
-            const response = await this.rawFetch(url, 'GET');
+            const response = await this.requestWithRetry(url);
             if (response.status >= 300 && response.status < 400) {
                 const location = response.headers.get('location');
                 if (!location)
@@ -31,7 +50,7 @@ export class PoliteFetcher {
             if (!response.ok) {
                 throw new HttpError(`HTTP ${response.status} for ${url.pathname}`, response.status);
             }
-            return response.arrayBuffer();
+            return response.body;
         }
         throw new Error('Too many redirects');
     }
@@ -45,33 +64,90 @@ export class PoliteFetcher {
             return new TextDecoder('utf-8').decode(buffer);
         }
     }
-    async rawFetch(url, method) {
+    async close() {
+        await this.dispatcher.destroy();
+    }
+    async requestWithRetry(url) {
+        for (let attempt = 0;; attempt++) {
+            try {
+                const result = await this.queuedFetch(url);
+                if (attempt >= 1 || ![408, 425, 429, 500, 502, 503, 504].includes(result.status))
+                    return result;
+                const retryAfter = result.headers.get('retry-after');
+                if (retryAfter !== null && Number(retryAfter) > 2)
+                    return result;
+            }
+            catch (error) {
+                if (attempt >= 1 || !(error instanceof TypeError || error instanceof DOMException) ||
+                    error.cause instanceof UrlViolation)
+                    throw error;
+            }
+            await sleep(400 * (2 ** attempt));
+        }
+    }
+    async rawFetch(url, maxBytes) {
         const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), this.opts.timeoutMs);
+        const timer = setTimeout(() => controller.abort(new DOMException('Source response timed out', 'TimeoutError')), this.opts.timeoutMs);
         try {
-            return await fetch(url, {
-                method,
+            const init = {
+                method: 'GET',
                 redirect: 'manual',
                 signal: controller.signal,
+                dispatcher: this.dispatcher,
                 headers: {
                     'User-Agent': this.opts.userAgent,
                     Accept: 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8',
                     'Accept-Language': 'zh-CN,zh;q=0.9',
                 },
-                // Explicitly no credentials; cookies are never stored or replayed.
                 credentials: 'omit',
-            });
+            };
+            const response = await fetch(url, init);
+            const { status, headers, ok } = response;
+            let body = new ArrayBuffer(0);
+            if (!ok || Number(headers.get('content-length')) > maxBytes) {
+                void response.body?.cancel().catch(() => undefined);
+                if (ok)
+                    throw new HttpError('Source response exceeded its size limit', 413);
+            }
+            else if (response.body) {
+                const reader = response.body.getReader();
+                const cancel = () => { void reader.cancel().catch(() => undefined); };
+                controller.signal.addEventListener('abort', cancel, { once: true });
+                try {
+                    const chunks = [];
+                    let bytes = 0;
+                    while (true) {
+                        controller.signal.throwIfAborted();
+                        const chunk = await reader.read();
+                        if (chunk.done)
+                            break;
+                        bytes += chunk.value.byteLength;
+                        if (bytes > maxBytes)
+                            throw new HttpError('Source response exceeded its size limit', 413);
+                        chunks.push(chunk.value);
+                    }
+                    controller.signal.throwIfAborted();
+                    body = new Uint8Array(Buffer.concat(chunks, bytes)).buffer;
+                }
+                finally {
+                    controller.signal.removeEventListener('abort', cancel);
+                    cancel();
+                    reader.releaseLock();
+                }
+            }
+            return { status, headers, ok, body };
         }
         finally {
             clearTimeout(timer);
         }
     }
-    async before(url) {
-        const host = url.host;
+    async queuedFetch(url) {
+        const host = url.hostname.toLowerCase().replace(/\.$/, '');
         const previous = this.queues.get(host) ?? Promise.resolve();
         let release;
         const current = new Promise((resolve) => { release = resolve; });
-        this.queues.set(host, previous.then(() => current));
+        const tail = previous.then(() => current);
+        this.queues.set(host, tail);
         await previous;
         try {
             let delay = this.opts.minIntervalMs;
@@ -90,9 +166,12 @@ export class PoliteFetcher {
             if (wait > 0)
                 await sleep(wait);
             this.lastRequest.set(host, Date.now());
+            return await this.rawFetch(url, MAX_PUBLIC_BODY);
         }
         finally {
             release();
+            if (this.queues.get(host) === tail)
+                this.queues.delete(host);
         }
     }
     async robotsFor(url) {
@@ -105,7 +184,7 @@ export class PoliteFetcher {
         const robotsUrl = `${origin}/robots.txt`;
         let state;
         try {
-            const response = await this.rawFetch(new URL(robotsUrl), 'GET');
+            const response = await this.rawFetch(new URL(robotsUrl), MAX_ROBOTS_BODY);
             if (response.status === 404 || response.status === 410) {
                 state = { fetchedAt: Date.now(), rule: null, deniedByServerError: false };
             }
@@ -114,7 +193,7 @@ export class PoliteFetcher {
                 state = { fetchedAt: Date.now(), rule: null, deniedByServerError: true };
             }
             else {
-                state = { fetchedAt: Date.now(), rule: parseRobots(await response.text()), deniedByServerError: false };
+                state = { fetchedAt: Date.now(), rule: parseRobots(new TextDecoder().decode(response.body)), deniedByServerError: false };
             }
         }
         catch (error) {

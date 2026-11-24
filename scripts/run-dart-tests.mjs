@@ -46,7 +46,8 @@ if (!existsSync(binary)) {
     process.exit(0)
   }
   console.log('[dart-tests] compiling bnp_headless ...')
-  run(dart, ['pub', 'get'])
+  mkdirSync(dirname(binary), { recursive: true })
+  run(dart, ['pub', 'get', '--enforce-lockfile'])
   run(dart, ['compile', 'exe', 'bin/headless.dart', '-o', binary])
 }
 

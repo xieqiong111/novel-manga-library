@@ -2,7 +2,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools';
 import { studioDelegated, studioJob } from '../../server/studio-jobs.mjs';
 import { jsonOutput, ok, runTool } from './common.js';
 const ACTIONS = ['list', 'get', 'cancel', 'retry', 'logs', 'status'];
-const STATES = ['queued', 'running', 'completed', 'failed', 'cancelled', 'interrupted'];
+const STATES = ['queued', 'running', 'verifying', 'importing', 'completed', 'cancelling', 'cancelled', 'failed', 'interrupted'];
 /**
  * Requirement #8/#9: every download task is queryable, cancellable and
  * retryable, with persisted progress and the chapters/volumes actually written.
@@ -14,7 +14,7 @@ export function registerNovelTasks(ctx, runtime) {
         description: [
             'Manage background EPUB download tasks. Actions: list, get, cancel, retry, logs, status.',
             'Use get/list to read progress. After completion use the EPUB artifacts and their verified location.nasPath when present. downloadPath is the Studio file endpoint. storagePath is a path inside Studio.',
-            'cancel aborts a queued or running task cooperatively; retry re-queues a failed/cancelled/interrupted task.',
+            'cancel waits for the active attempt to stop; retry re-queues a failed/cancelled/interrupted task.',
             'status returns plugin diagnostics (Dart core availability, enabled sources, dirs); logs returns recent structured log entries.',
         ].join(' '),
         parameters: {
@@ -25,9 +25,11 @@ export function registerNovelTasks(ctx, runtime) {
             taskId: { type: 'string', description: 'Task id returned by novel_download. Required for get/cancel/retry.' },
             state: {
                 type: 'string',
-                description: 'Optional list filter: queued | running | completed | failed | cancelled | interrupted.',
+                description: `Optional list filter: ${STATES.join(' | ')}.`,
             },
             limit: { type: 'number', description: 'Max tasks (list) or log entries (logs), default 20.' },
+            offset: { type: 'number', description: 'Zero-based offset for list pagination, default 0.' },
+            query: { type: 'string', description: 'Optional work title filter.' },
         },
         output: jsonOutput(),
         async execute(args) {
@@ -37,6 +39,8 @@ export function registerNovelTasks(ctx, runtime) {
                     return { ok: false, error: { code: 'UNKNOWN_ACTION', message: `action must be one of ${ACTIONS.join(', ')}` } };
                 }
                 const limit = Math.min(Math.max(Math.trunc(args.limit ?? 20), 1), 200);
+                const offset = Math.max(0, Math.trunc(args.offset ?? 0));
+                const query = args.query?.trim();
                 if (studioDelegated()) {
                     if (action === 'status')
                         return ok({ executor: 'studio', status: await studioJob('/api/status') });
@@ -47,8 +51,10 @@ export function registerNovelTasks(ctx, runtime) {
                         if (state && !STATES.includes(state)) {
                             return { ok: false, error: { code: 'UNKNOWN_STATE', message: '无效的任务状态筛选。' } };
                         }
-                        const tasks = await studioJob('/api/tasks', { query: { state } });
-                        return ok({ executor: 'studio', tasks: tasks.slice(0, limit), total: tasks.length,
+                        const page = await studioJob('/api/tasks', { query: { state, offset, limit, query } });
+                        const legacy = Array.isArray(page);
+                        return ok({ executor: 'studio', tasks: legacy ? page.slice(offset, offset + limit) : page.items,
+                            total: legacy ? page.length : page.total, nextOffset: legacy ? null : page.nextOffset,
                             nextStep: 'Use novel_tasks(action="get", taskId=...) for verified library artifacts and progress.',
                         });
                     }
@@ -75,11 +81,15 @@ export function registerNovelTasks(ctx, runtime) {
                     if (requestedState && !STATES.includes(requestedState)) {
                         return { ok: false, error: { code: 'UNKNOWN_STATE', message: `state must be one of ${STATES.join(', ')}` } };
                     }
-                    const tasks = runtime.tasks.list({ state: requestedState, limit });
+                    const page = runtime.tasks.page({ state: requestedState, limit, offset, query });
+                    const counts = Object.fromEntries(STATES.map((state) => [state, 0]));
+                    for (const record of runtime.tasks.records())
+                        counts[record.state]++;
                     return ok({
-                        tasks,
-                        total: tasks.length,
-                        counts: Object.fromEntries(STATES.map((s) => [s, runtime.tasks.list({ state: s, limit: 200 }).length])),
+                        tasks: page.items,
+                        total: page.total,
+                        nextOffset: page.nextOffset,
+                        counts,
                         nextStep: 'Use action="get" with a taskId for full progress and artifacts.',
                     });
                 }

@@ -45,6 +45,7 @@ function fakeChild() {
   child.kill = vi.fn(() => { child.killed = true; return true })
   setTimeout(() => {
     child.stdout.write('{"type":"result","ok":true,"data":{"novel":{"id":"1"}}}\n')
+    child.emit('close', 0)
   }, 0)
   return child
 }

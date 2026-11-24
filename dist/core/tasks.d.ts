@@ -23,12 +23,23 @@ export declare class TaskManager {
         state?: TaskState;
         limit?: number;
     }): TaskRecord[];
+    records(): IterableIterator<TaskRecord>;
+    page(options?: {
+        state?: TaskState;
+        query?: string;
+        limit?: number;
+        offset?: number;
+        sort?: 'recent' | 'oldest';
+    }): import("./pagination.js").Page<TaskRecord>;
     start(request: DownloadRequest): Promise<TaskRecord>;
     cancel(id: string): Promise<TaskRecord>;
     retry(id: string): Promise<TaskRecord>;
     dispose(): Promise<void>;
+    private assertOpen;
     private pump;
     private runTask;
+    private transition;
+    private terminal;
     private applyProgress;
 }
 export declare class TaskManagerError extends Error {

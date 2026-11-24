@@ -32,6 +32,8 @@ export declare class PluginRuntime {
     readonly suwayomi: SuwayomiClient;
     readonly mangaKomga: MangaKomga;
     private initPromise;
+    private releaseWriter?;
+    private disposed;
     private dartStatus;
     constructor(config: ResolvedConfig, logger: Logger);
     /** Idempotent, awaited by every tool before its first operation. */

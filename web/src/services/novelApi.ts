@@ -49,7 +49,7 @@ export interface NovelApi {
   createTask(input: CreateTaskInput): Promise<DownloadTask>
   cancelTask(id: string): Promise<void>
   retryTask(id: string): Promise<void>
-  listLibrary(keyword?: string): Promise<LibraryItem[]>
+  listLibrary(keyword?: string, limit?: number): Promise<LibraryItem[]>
   getLibraryStats(): Promise<LibraryStats>
   getActivities(): Promise<ActivityItem[]>
   getSources(): Promise<SourceHealth[]>
@@ -67,6 +67,29 @@ const queryString = (values: Record<string, string | undefined>) => {
   }
   const text = params.toString()
   return text ? `?${text}` : ''
+}
+
+export interface Page<T> {
+  items: T[]
+  total: number
+  offset: number
+  nextOffset: number | null
+}
+
+export interface TaskPage extends Page<DownloadTask> {
+  counts: Record<DownloadTask['state'], number>
+}
+
+export function listTaskPage(options: { offset: number; query: string; state?: string; signal?: AbortSignal }) {
+  return apiFetch<TaskPage>(`/tasks${queryString({
+    offset: String(options.offset), limit: '40', query: options.query, state: options.state,
+  })}`, { signal: options.signal })
+}
+
+export function listLibraryPage(options: { offset: number; query: string; sort: string; integrity?: string }) {
+  return apiFetch<Page<LibraryItem>>(`/library${queryString({
+    offset: String(options.offset), limit: '40', query: options.query.trim(), sort: options.sort, integrity: options.integrity,
+  })}`)
 }
 
 /**
@@ -127,8 +150,8 @@ const liveApi: NovelApi = {
     await apiFetch(`/tasks/${encodeURIComponent(id)}/retry`, { method: 'POST' })
     taskStore.refresh()
   },
-  listLibrary(keyword = '') {
-    return apiFetch<LibraryItem[]>(`/library${queryString({ query: keyword.trim() })}`)
+  listLibrary(keyword = '', limit = 200) {
+    return apiFetch<LibraryItem[]>(`/library${queryString({ query: keyword.trim(), limit: String(limit) })}`)
   },
   getLibraryStats() {
     return apiFetch<LibraryStats>('/library/stats')
@@ -143,8 +166,8 @@ const liveApi: NovelApi = {
     return apiFetch<VerifyResult>(`/library/${encodeURIComponent(id)}/verify`, { method: 'POST' })
   },
   async getFeatured() {
-    const items = await liveApi.listLibrary()
-    return items.slice(0, 5).map(libraryNovel)
+    const items = await liveApi.listLibrary('', 5)
+    return items.map(libraryNovel)
   },
   getStatus() {
     return apiFetch<RuntimeStatus>('/status')

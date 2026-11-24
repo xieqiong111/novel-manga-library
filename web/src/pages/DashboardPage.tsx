@@ -62,7 +62,7 @@ export function DashboardPage() {
   const { data: overview } = useAsync(async () => {
     const [novels, recent, libraryStats, activities] = await Promise.all([
       novelApi.getFeatured(),
-      novelApi.listLibrary(),
+      novelApi.listLibrary('', 3),
       novelApi.getLibraryStats(),
       novelApi.getActivities(),
     ])

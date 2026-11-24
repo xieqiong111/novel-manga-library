@@ -43,6 +43,7 @@ export interface DownloadTask {
   cover: CoverTheme
   coverIndex: number
   state: TaskState
+  taskState?: TaskState | 'verifying' | 'importing' | 'cancelling' | 'interrupted'
   percent: number
   volumeLabel: string
   chapterLabel: string
@@ -58,6 +59,7 @@ export interface LibraryItem {
   novelId: string
   title: string
   author: string
+  taskId?: string
   fileName: string
   cover: CoverTheme
   coverIndex: number
@@ -78,6 +80,7 @@ export interface LibraryStats {
   bytes?: number
   chapters?: number
   failed?: number
+  bySource?: Record<string, number>
 }
 
 export interface VerifyResult {

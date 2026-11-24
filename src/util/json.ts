@@ -1,14 +1,29 @@
-import { mkdir, readFile, rename, writeFile, rm } from 'node:fs/promises'
+import { mkdir, open, readFile, rename, writeFile, rm } from 'node:fs/promises'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 
 /** Write JSON atomically (temp file in the same directory + rename). */
 export async function atomicWriteJson(filePath: string, value: unknown): Promise<void> {
+  await atomicWriteText(filePath, `${JSON.stringify(value, null, 2)}\n`)
+}
+
+export async function syncDirectory(directory: string): Promise<void> {
+  if (process.platform === 'win32') return
+  const handle = await open(directory, 'r')
+  try {
+    await handle.sync()
+  } finally {
+    await handle.close()
+  }
+}
+
+export async function atomicWriteText(filePath: string, text: string): Promise<void> {
   await mkdir(path.dirname(filePath), { recursive: true })
   const tmp = `${filePath}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`
   try {
-    await writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 })
+    await writeFile(tmp, text, { encoding: 'utf8', mode: 0o600, flag: 'wx', flush: true })
     await rename(tmp, filePath)
+    await syncDirectory(path.dirname(filePath))
   } catch (error) {
     await rm(tmp, { force: true }).catch(() => undefined)
     throw error

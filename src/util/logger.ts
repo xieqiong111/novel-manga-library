@@ -55,7 +55,7 @@ export function createLogger(logsDir: string, level: LogLevel = 'info', echo = f
   }
 
   const write = (lvl: LogLevel, scope: string, event: string, fields?: Record<string, unknown>): void => {
-    if (LEVELS[lvl] < LEVELS[level]) return
+    if (closed || LEVELS[lvl] < LEVELS[level]) return
     const entry: LogEntry = { ts: new Date().toISOString(), level: lvl, scope, event, ...redact(fields ?? {}) }
     ring.push(entry)
     if (ring.length > 500) ring.shift()
@@ -110,15 +110,23 @@ export function createLogger(logsDir: string, level: LogLevel = 'info', echo = f
 
 /** Never persist secrets or full query strings with tokens. */
 function redact(fields: Record<string, unknown>): Record<string, unknown> {
-  const out: Record<string, unknown> = {}
-  for (const [key, value] of Object.entries(fields)) {
-    if (/(apikey|token|secret|password|cookie|authorization)/i.test(key)) {
-      out[key] = '[redacted]'
-    } else if (typeof value === 'string' && value.length > 500) {
-      out[key] = `${value.slice(0, 500)}…`
-    } else {
-      out[key] = value
+  const clean = (value: unknown, depth: number): unknown => {
+    if (depth > 5) return '[nested]'
+    if (typeof value === 'string') {
+      return value
+        .replace(/\b(?:Bearer|Basic)\s+[A-Za-z0-9+/=_.-]+/gi, '[redacted authorization]')
+        .replace(/https?:\/\/[^\s/@]+(?::[^\s/@]*)?@/gi, '[redacted credentials]@')
+        .replace(/(https?:\/\/[^\s"'<>?]+)\?[^\s"'<>]*/gi, '$1?[redacted query]')
+        .replace(/((?:api[-_]?key|token|secret|password)=)[^\s&;,]+/gi, '$1[redacted]')
+        .slice(0, 500)
     }
+    if (Array.isArray(value)) return value.slice(0, 50).map((item) => clean(item, depth + 1))
+    if (value && typeof value === 'object') {
+      return Object.fromEntries(Object.entries(value).slice(0, 50).map(([key, item]) => [
+        key, /(?:api[-_]?key|token|secret|password|cookie|authorization)/i.test(key) ? '[redacted]' : clean(item, depth + 1),
+      ]))
+    }
+    return value
   }
-  return out
+  return clean(fields, 0) as Record<string, unknown>
 }

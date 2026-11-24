@@ -38,6 +38,7 @@
     "scripts/verify-nas.mjs",
     "scripts/verify-live.mjs",
     "scripts/verify-web-api.mjs",
+    "scripts/migrate-novel-state.mjs",
     "docs",
     "docker",
     "Dockerfile",
@@ -72,21 +73,21 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.1.0",
-    "@deepseek-ai/dsh-tools": "^0.2.2-rc.1",
-    "@deepseek-ai/schemastery": "^3.18.1-rc.1"
+    "@deepseek-ai/dsh-tools": "^0.2.2-rc.1"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "4.1.0",
     "@deepseek-ai/dsh": "0.2.2-rc.1",
     "@deepseek-ai/dsh-tool-executor-native": "0.2.2-rc.1",
     "@deepseek-ai/dsh-tools": "0.2.2-rc.1",
-    "@deepseek-ai/schemastery": "^3.18.1-rc.1",
     "@types/node": "^24.0.0",
     "typescript": "^5.9.0",
     "vitest": "^3.2.0"
   },
   "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.1-rc.1",
     "cheerio": "^1.0.0",
-    "opencc-js": "^1.0.5"
+    "opencc-js": "^1.0.5",
+    "undici": "7.30.2"
   }
 }

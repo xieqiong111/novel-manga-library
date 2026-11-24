@@ -33,7 +33,7 @@ npm --prefix web run dev -- --host 127.0.0.1
 
 ## 在 NAS 上部署
 
-Studio 针对飞牛 NAS 与 Linux x86-64 Docker 主机提供部署指南。准备 Live 前端、Dart 运行器和持久化目录后，构建并启动 Web 服务。首次打开管理台时，通过部署初始化码创建管理员账号。Studio 默认使用端口 `5273`，Web 管理本身无需安装 DSH。
+Studio 针对飞牛 NAS 与 Linux x86-64 Docker 主机提供部署指南。镜像构建包含 Live 前端、API、Dart 运行器和 BangumiKomga。配置持久化目录后，用 Docker Compose 构建并启动 Web 服务。首次打开管理台时，通过部署初始化码创建管理员账号。Studio 默认使用端口 `5273`，Web 管理本身无需安装 DSH。
 
 | 想接入的功能 | 所需组件与配置 |
 | --- | --- |
@@ -43,7 +43,7 @@ Studio 针对飞牛 NAS 与 Linux x86-64 Docker 主机提供部署指南。准�
 | 浏览 Komga、同步目录或请求扫描 | Komga 连接及对应权限。[配置 Komga](docs/KOMGA.md) |
 | Agent 下载、看进度或刮削 | DSH 0.2.2-rc.1 原生插件及对应服务配置。[安装 DSH 插件](docs/DSH-MANGA.md) |
 
-需要让 DSH 与网页共用下载任务和进度时，启用 [Studio 托管模式](docs/DSH-STUDIO-JOBS.md)。
+需要让 DSH 与网页共用下载任务和进度时，启用 [Studio 托管模式](docs/DSH-STUDIO-JOBS.md)，由 Studio 写入任务与书库。独立运行的 DSH 使用自己的可写目录。
 
 [从零部署 Studio](docs/DEPLOY-NAS.md#4-web-管理台bff--live-前端) · [首次创建管理员](web/README.md#首次创建管理员) · [HTTP API](web/README.md#http-api)
 

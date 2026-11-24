@@ -103,6 +103,66 @@ describe('Library (requirement #9)', () => {
     expect(reloaded.stats().total).toBe(1)
   })
 
+  it('protects an unbound EPUB from simultaneous downloads of a homonymous edition', async () => {
+    const source = await seedEpub()
+    const library = new Library(dir, logger)
+    const input = {
+      artifact: { path: source, volumeNames: ['第一卷'], chapters: 1, bytes: 0, sha256: null, integrity: 'pending' as const, integrityError: null },
+      title: '同名作品', author: '作者', sourceId: 'fixture', bookId: 'one', taskId: 'task_1',
+    }
+    const [first, conflict] = await Promise.allSettled([
+      library.add(input),
+      library.add({ ...input, sourceId: 'other', bookId: 'two', taskId: 'task_2' }),
+    ])
+    expect(first.status).toBe('fulfilled')
+    expect(conflict).toMatchObject({ status: 'rejected', reason: { message: expect.stringContaining('LIBRARY_FOLDER_CONFLICT') } })
+    expect(await readFile(path.join(dir, '同名作品', '第一卷.epub'))).toEqual(await readFile(source))
+    await expect(library.add({ ...input, language: 'ja' })).rejects.toThrow('LIBRARY_FOLDER_CONFLICT')
+    await expect(library.add({ ...input, artifact: { ...input.artifact, volumeNames: ['第一卷', '第二卷'] } }))
+      .rejects.toThrow('LIBRARY_FOLDER_CONFLICT')
+  })
+
+  it('reconciles files and the index after the index write fails', async () => {
+    const source = await seedEpub()
+    const library = new Library(dir, logger)
+    await library.load()
+    const index = path.join(dir, 'index.json')
+    await mkdir(index)
+    const input = {
+      artifact: { path: source, volumeNames: ['第一卷'], chapters: 1, bytes: 0, sha256: null, integrity: 'pending' as const, integrityError: null },
+      title: '可恢复入库', author: '作者', sourceId: 'fixture', bookId: 'one', taskId: 'task_1',
+    }
+    await expect(library.add(input)).rejects.toThrow()
+    expect(library.stats().total).toBe(0)
+    const journal = path.join(dir, '.pending-epub-import.json')
+    expect(JSON.parse(await readFile(journal, 'utf8')).entry.taskId).toBe('task_1')
+    expect(await readFile(path.join(dir, '可恢复入库', '第一卷.epub'))).toEqual(await readFile(source))
+    await rm(index, { recursive: true })
+    const recovered = new Library(dir, logger)
+    await recovered.load()
+    expect(recovered.forTask('task_1')).toHaveLength(1)
+    await expect(readFile(journal)).rejects.toMatchObject({ code: 'ENOENT' })
+    await recovered.add(input)
+    expect(recovered.stats().total).toBe(1)
+  })
+
+  it('finishes an explicitly requested deletion after a crash between unlink and index update', async () => {
+    const source = await seedEpub()
+    const library = new Library(dir, logger)
+    const entry = (await library.add({
+      artifact: { path: source, volumeNames: ['第一卷'], chapters: 1, bytes: 0, sha256: null, integrity: 'pending', integrityError: null },
+      title: '删除测试', author: '作者', sourceId: 'fixture', bookId: 'fixture:delete', taskId: 'task_1',
+    }))!
+    await writeFile(path.join(dir, '.pending-epub-removal.json'), JSON.stringify({
+      version: 1, entry, observedSha256: entry.sha256,
+    }))
+    await rm(path.join(dir, entry.relativePath))
+    const recovered = new Library(dir, logger)
+    await recovered.load()
+    expect(recovered.stats().total).toBe(0)
+    await expect(readFile(path.join(dir, '.pending-epub-removal.json'))).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
   it('uses the chosen EPUB directory and keeps old entries readable across changes', async () => {
     const source = await seedEpub()
     const root = path.join(dir, 'storage')

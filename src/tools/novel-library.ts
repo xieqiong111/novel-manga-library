@@ -3,6 +3,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { safeResolve } from '../util/paths.js'
 import type { LibraryEntry } from '../types.js'
+import type { Page } from '../core/pagination.js'
 import type { PluginRuntime } from '../runtime.js'
 import { studioDelegated, studioJob } from '../../server/studio-jobs.mjs'
 import { jsonOutput, ok, runTool } from './common.js'
@@ -39,6 +40,7 @@ export function registerNovelLibrary(ctx: Context, runtime: PluginRuntime) {
       id: { type: 'string', description: 'Library entry id (lib_...). Required for get/remove, optional for verify.' },
       query: { type: 'string', description: 'Optional case-insensitive title/author/volume filter for list.' },
       limit: { type: 'number', description: 'Max entries for list (default 20).' },
+      offset: { type: 'number', description: 'Zero-based offset for list pagination, default 0.' },
       confirm: { type: 'boolean', description: 'Must be true for the destructive remove action.' },
     },
     output: jsonOutput(),
@@ -49,6 +51,7 @@ export function registerNovelLibrary(ctx: Context, runtime: PluginRuntime) {
           return { ok: false, error: { code: 'UNKNOWN_ACTION', message: `action must be one of ${ACTIONS.join(', ')}` } }
         }
         const limit = Math.min(Math.max(Math.trunc(args.limit ?? 20), 1), 200)
+        const offset = Math.max(0, Math.trunc(args.offset ?? 0))
         if (studioDelegated()) {
           if (action === 'remove') return { ok: false, error: {
             code: 'STUDIO_ADMIN_REQUIRED', message: '删除需要使用 Studio 管理员会话。',
@@ -68,14 +71,18 @@ export function registerNovelLibrary(ctx: Context, runtime: PluginRuntime) {
             })
             return ok({ ...result, executor: 'studio' })
           }
-          const entries = await studioJob<Array<{ sha256?: string; fileName: string }>>('/api/library', {
-            query: { query: args.query?.trim() },
+          type StudioLibraryItem = { sha256?: string; fileName: string }
+          const page = await studioJob<Page<StudioLibraryItem> | StudioLibraryItem[]>('/api/library', {
+            query: { query: args.query?.trim(), offset, limit: action === 'checksums' && args.limit == null ? 200 : limit },
           })
+          const entries = Array.isArray(page) && action === 'list' ? page.slice(offset, offset + limit)
+            : Array.isArray(page) ? page : page.items
           if (action === 'checksums') {
             return ok({ executor: 'studio', checksums: entries.filter((entry) => entry.sha256)
-              .map((entry) => `${entry.sha256}  ${entry.fileName}`) })
+              .map((entry) => `${entry.sha256}  ${entry.fileName}`), nextOffset: Array.isArray(page) ? null : page.nextOffset })
           }
-          return ok({ executor: 'studio', entries: entries.slice(0, limit), total: entries.length,
+          return ok({ executor: 'studio', entries, total: Array.isArray(page) ? page.length : page.total,
+            nextOffset: Array.isArray(page) ? null : page.nextOffset,
             nextStep: 'Use the returned downloadPath against the Studio API for verified EPUBs.',
           })
         }
@@ -104,10 +111,11 @@ export function registerNovelLibrary(ctx: Context, runtime: PluginRuntime) {
           })
         }
         if (action === 'list') {
-          const entries = runtime.library.list({ query: args.query?.trim(), limit })
+          const page = runtime.library.page({ query: args.query?.trim(), limit, offset })
           return ok({
-            entries: entries.map((e) => withAbsolute(runtime, e)),
-            total: entries.length,
+            entries: page.items.map((e) => withAbsolute(runtime, e)),
+            total: page.total,
+            nextOffset: page.nextOffset,
             stats: runtime.library.stats(),
             status: status(),
           })

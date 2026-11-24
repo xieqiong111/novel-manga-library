@@ -74,10 +74,17 @@ export function toVolume(bookId, volume) {
 const TASK_STATE = {
   queued: 'queued',
   running: 'running',
+  verifying: 'running',
+  importing: 'running',
+  cancelling: 'running',
   completed: 'completed',
   failed: 'failed',
   cancelled: 'cancelled',
   interrupted: 'failed',
+}
+
+export function taskDisplayState(state) {
+  return Object.hasOwn(TASK_STATE, state) ? TASK_STATE[state] : 'failed'
 }
 
 const PHASE_LABEL = {
@@ -85,6 +92,10 @@ const PHASE_LABEL = {
   starting: '正在启动',
   downloading: '正在抓取章节',
   packing: '正在打包 EPUB',
+  verifying: '正在校验 EPUB',
+  importing: '正在入库',
+  cancelling: '正在取消',
+  interrupted: '执行中断',
   completed: '已完成',
   failed: '已失败',
   cancelled: '已取消',
@@ -100,12 +111,14 @@ export function toTask(record) {
     title: record.request?.title ?? '未知书目',
     ...(record.request?.bangumi ? { bangumi: record.request.bangumi } : {}),
     ...art(record.request?.bookId ?? record.id),
-    state: TASK_STATE[record.state] ?? 'failed',
+    state: taskDisplayState(record.state),
+    taskState: record.state,
     percent: Number(progress.percent) || 0,
     volumeLabel:
       (record.downloadedVolumes ?? []).join('、') ||
       (volumeNames.length ? volumeNames.join('、') : `${progress.volumesTotal ?? 1} 卷`),
-    chapterLabel: progress.currentChapter || PHASE_LABEL[progress.phase] || progress.phase || '等待开始',
+    chapterLabel: (record.state === 'running' ? progress.currentChapter : null) ||
+      PHASE_LABEL[progress.phase] || progress.phase || '等待开始',
     size: bytes > 0 ? formatBytes(bytes) : undefined,
     message: record.error?.message,
     updatedAt: relativeTime(record.updatedAt),
@@ -124,6 +137,7 @@ export function toLibraryItem(entry) {
       : `${entry.sourceId}:${entry.bookId}`,
     title: entry.title,
     author: entry.author || '未知作者',
+    taskId: entry.taskId,
     fileName: entry.relativePath.split(/[\\/]/).pop() || entry.relativePath,
     ...art(entry.bookId || entry.id),
     volumes: Array.isArray(entry.volumeNames) && entry.volumeNames.length > 0 ? entry.volumeNames.length : 1,
@@ -140,11 +154,12 @@ export function toLibraryItem(entry) {
 
 export function toLibraryStats(runtime) {
   const stats = runtime.library.stats()
-  const tasks = runtime.store.list()
+  const tasks = [...runtime.store.records()]
   return {
     epubs: stats.total,
     tasks: tasks.length,
-    queued: tasks.filter((task) => task.state === 'running' || task.state === 'queued').length,
+    queued: tasks.filter((task) => taskDisplayState(task.state) === 'running' || task.state === 'queued').length,
+    bySource: stats.bySource,
     verified: stats.ok,
     bytes: stats.bytes,
     chapters: stats.chapters,

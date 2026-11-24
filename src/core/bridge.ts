@@ -94,6 +94,7 @@ export class DartBridge {
     }
     if (request.outputDir) await mkdir(request.outputDir, { recursive: true })
     await mkdir(this.config.logsDir, { recursive: true })
+    if (request.signal?.aborted) throw new DartError('CANCELLED', 'Dart execution was cancelled')
 
     const args = [...runner.prefix, request.command,
       '--source', request.sourceId,
@@ -131,6 +132,9 @@ export class DartBridge {
       let stderrBuffer = ''
       let settled = false
       let killTimer: NodeJS.Timeout | null = null
+      let stopping: DartError | undefined
+      let cancelMarker: Promise<void> | undefined
+      let outcome: { data: T } | { error: DartError } | undefined
 
       const cleanup = (): void => {
         if (killTimer) clearTimeout(killTimer)
@@ -145,22 +149,20 @@ export class DartBridge {
         if (error) reject(error)
         else resolve({ data: data as T, events })
       }
-      const cancelGracefully = async (): Promise<void> => {
-        if (request.cancelFile) {
-          await writeFile(request.cancelFile, 'cancel\n', 'utf8').catch(() => undefined)
-        }
-        if (!child.killed) child.kill('SIGTERM')
-        if (!killTimer) {
-          killTimer = setTimeout(() => { if (!child.killed) child.kill('SIGKILL') }, 3000)
-          killTimer.unref?.()
-        }
+      const stop = (error: DartError): void => {
+        if (settled || stopping) return
+        stopping = error
+        if (request.cancelFile) cancelMarker = writeFile(request.cancelFile, 'cancel\n', 'utf8').catch(() => undefined)
+        child.kill('SIGTERM')
+        // ChildProcess.killed means that a signal was sent. The child may still be alive.
+        killTimer = setTimeout(() => { if (!settled) child.kill('SIGKILL') }, 3000)
+        killTimer.unref?.()
       }
-      const onAbort = (): void => { void cancelGracefully() }
+      const onAbort = (): void => stop(new DartError('CANCELLED', 'Dart execution was cancelled'))
       request.signal?.addEventListener('abort', onAbort, { once: true })
 
       const timeoutTimer = setTimeout(() => {
-        void cancelGracefully()
-        finish(new DartError('TIMEOUT', `Dart ${request.command} exceeded ${timeout}ms`, true))
+        stop(new DartError('TIMEOUT', `Dart ${request.command} exceeded ${timeout}ms`, true))
       }, timeout)
       timeoutTimer.unref?.()
 
@@ -180,11 +182,19 @@ export class DartBridge {
         stderrBuffer = (stderrBuffer + chunk).slice(-8000)
       })
       child.on('error', (error) => {
-        finish(new DartError('SPAWN_FAILED', `${runner.label}: ${error.message}`, true))
+        if (!child.pid) finish(new DartError('SPAWN_FAILED', `${runner.label}: ${error.message}`, true))
       })
       child.on('close', (code) => {
         if (stdoutBuffer.trim()) handleLine(stdoutBuffer.trim())
         if (settled) return
+        if (stopping) {
+          const reason = stopping
+          if (cancelMarker) void cancelMarker.then(() => finish(reason))
+          else finish(reason)
+          return
+        }
+        if (outcome && 'error' in outcome) return finish(outcome.error)
+        if (code === 0 && outcome && 'data' in outcome) return finish(null, outcome.data)
         if (stderrBuffer.trim()) this.logger.debug('bridge', 'stderr', { tail: stderrBuffer.slice(-2000) })
         finish(new DartError('DART_EXIT', `Dart ${request.command} exited with code ${code ?? 'unknown'} without a result line. ${stderrBuffer.slice(-400)}`, true))
       })
@@ -198,11 +208,11 @@ export class DartBridge {
           return
         }
         events.push(event)
-        if (event.type === 'progress') request.onProgress?.(event)
-        if (event.type === 'result') finish(null, (event.data ?? {}) as T)
+        if (event.type === 'progress' && !stopping) request.onProgress?.(event)
+        if (event.type === 'result') outcome = { data: (event.data ?? {}) as T }
         if (event.type === 'error') {
           const code = event.code ?? 'PACK_FAILED'
-          finish(new DartError(code, event.message ?? code, code === 'PACK_FAILED' || code === 'TIMEOUT'))
+          outcome = { error: new DartError(code, event.message ?? code, code === 'PACK_FAILED' || code === 'TIMEOUT') }
         }
       }
     })

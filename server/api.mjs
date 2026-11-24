@@ -5,8 +5,8 @@
  * NovelService, TaskManager and Library that back the six Cordis tools. There
  * is no fixture/mock branch here: an empty result is an empty result.
  */
-import { createReadStream } from 'node:fs'
-import { lstat, readFile, stat } from 'node:fs/promises'
+import { constants } from 'node:fs'
+import { lstat, open, readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { timingSafeEqual } from 'node:crypto'
 import { TaskManagerError } from '../dist/core/tasks.js'
@@ -22,7 +22,9 @@ import { createBangumiKomga, MetadataError, withBangumiArchiveRecovery } from '.
 import { bindMangaTitle, readMangaBangumiBinding, resolveDownloadSubject } from './bangumi-download.mjs'
 import { createMangaVolumeCatalogApi, readMangaVolumeSynopsis } from './manga-volume-api.mjs'
 import { createKomgaScanner } from './komga-scan.mjs'
-import { createSavedFileHistory, readDshTasks } from './download-history.mjs'
+import { createSavedFileHistory } from './download-history.mjs'
+import { createNovelLists } from './novel-list-api.mjs'
+import { HttpError } from './http-error.mjs'
 import { authorizeStudioJob, isStudioJobCredential, studioJobRoute } from './studio-jobs.mjs'
 import { createKomgaMaintenance } from './komga-maintenance.mjs'
 import { rank, resolveBook } from '../dist/search.js'
@@ -39,14 +41,6 @@ import {
 } from './mapping.mjs'
 
 const MAX_BODY = 64 * 1024
-
-class HttpError extends Error {
-  constructor(status, code, message) {
-    super(message)
-    this.status = status
-    this.code = code
-  }
-}
 
 function sendJson(res, status, payload) {
   const body = JSON.stringify(payload)
@@ -181,10 +175,7 @@ export function createApi(
     } catch { return item }
   }
   const savedFileHistory = createSavedFileHistory(settings, runtime, logger)
-  const dshHistory = () => readDshTasks(settings.novelTaskHistoryDir).catch(() => {
-    logger.warn('downloads', 'dsh_history_unavailable')
-    return []
-  })
+  const novelLists = createNovelLists(runtime, settings, logger, libraryItem)
   settings.postDownload?.start({ currentKomga, metadata, scan, mangaVolumes })
   const handleDownloadFolders = createDownloadFoldersApi(settings, currentKomga, scan)
   const handleKomgaApi = createKomgaApi({
@@ -346,6 +337,8 @@ export function createApi(
       sourceId: book.sourceId,
       source: book.source,
       sourceUrl: book.sourceUrl,
+      language: body.language,
+      editionId: body.editionId,
       title: work.title,
       author: work.author,
       ...(bangumi ? { bangumi } : {}),
@@ -364,24 +357,32 @@ export function createApi(
     const absolute = await runtime.library.filePath(entry).catch(() => {
       throw new HttpError(404, 'FILE_MISSING', 'EPUB file is missing from disk')
     })
-    const info = await stat(absolute).catch(() => {
+    const handle = await open(absolute, constants.O_RDONLY | constants.O_NOFOLLOW).catch(() => {
       throw new HttpError(404, 'FILE_MISSING', 'EPUB file is missing from disk')
     })
-    const name = path.basename(entry.relativePath)
-    res.writeHead(200, {
-      'content-type': 'application/epub+zip',
-      'content-length': info.size,
-      'content-disposition': `attachment; filename="download.epub"; filename*=UTF-8''${encodeURIComponent(name)}`,
-      'cache-control': 'private, no-store',
-      'x-content-type-options': 'nosniff',
-    })
-    if (req.method === 'HEAD') {
-      res.end()
-      return
+    try {
+      const info = await handle.stat()
+      if (!info.isFile()) throw new HttpError(404, 'FILE_MISSING', 'EPUB file is missing from disk')
+      const name = path.basename(entry.relativePath)
+      res.writeHead(200, {
+        'content-type': 'application/epub+zip',
+        'content-length': info.size,
+        'content-disposition': `attachment; filename="download.epub"; filename*=UTF-8''${encodeURIComponent(name)}`,
+        'cache-control': 'private, no-store',
+        'x-content-type-options': 'nosniff',
+      })
+      if (req.method === 'HEAD') {
+        await handle.close()
+        res.end()
+        return
+      }
+      const stream = handle.createReadStream()
+      res.once('close', () => stream.destroy())
+      stream.on('error', () => res.destroy()).pipe(res)
+    } catch (error) {
+      await handle.close()
+      throw error
     }
-    createReadStream(absolute)
-      .on('error', () => res.destroy())
-      .pipe(res)
   }
 
   /** Returns true when the request was handled as /api/*. */
@@ -504,19 +505,7 @@ export function createApi(
       }
 
       if (url.pathname === '/api/tasks' && method === 'GET') {
-        const state = url.searchParams.get('state')
-        const records = runtime.tasks.list({ limit: 200 })
-        if (state === 'interrupted') {
-          sendJson(res, 200, records.filter((task) => task.state === 'interrupted').map(toTask))
-          return true
-        }
-        const incoming = records.map(toTask)
-        const ids = new Set(incoming.map((task) => task.id))
-        const past = (await dshHistory()).filter((task) => !ids.has(task.id)).map((task) => ({
-          ...toTask({ ...task, id: 'dsh:' + task.id }), origin: 'dsh',
-        }))
-        const tasks = [...incoming, ...past].sort((a, b) => b.updatedTime - a.updatedTime)
-        sendJson(res, 200, state ? tasks.filter((task) => task.state === state) : tasks)
+        sendJson(res, 200, await novelLists.tasks(url.searchParams))
         return true
       }
       if (url.pathname === '/api/tasks/files' && method === 'GET') {
@@ -528,17 +517,7 @@ export function createApi(
         return true
       }
       if (segments[1] === 'tasks' && segments.length === 3 && method === 'GET') {
-        const id = segments[2]
-        const live = id.startsWith('dsh:') ? null : runtime.tasks.get(id)
-        const historical = !live
-        const task = live ?? (await dshHistory()).find((entry) => entry.id === id || 'dsh:' + entry.id === id)
-        if (!task) throw new HttpError(404, 'TASK_NOT_FOUND', 'No matching download task')
-        const entries = historical ? [] : runtime.library.list({ limit: 200 }).filter((entry) => entry.taskId === task.id)
-        sendJson(res, 200, {
-          ...toTask({ ...task, id: historical ? 'dsh:' + task.id : id }), ...(historical ? { origin: 'dsh' } : {}),
-          progress: task.progress, downloadedChapters: task.downloadedChapters, downloadedVolumes: task.downloadedVolumes,
-          artifacts: await Promise.all(entries.map(libraryItem)),
-        })
+        sendJson(res, 200, await novelLists.task(segments[2]))
         return true
       }
       if (segments[1] === 'tasks' && segments.length === 4 && method === 'POST') {
@@ -554,9 +533,7 @@ export function createApi(
       }
 
       if (url.pathname === '/api/library' && method === 'GET') {
-        await runtime.library.load()
-        const entries = runtime.library.list({ query: url.searchParams.get('query') ?? '', limit: 200 })
-        sendJson(res, 200, await Promise.all(entries.map(libraryItem)))
+        sendJson(res, 200, await novelLists.library(url.searchParams))
         return true
       }
       if (url.pathname === '/api/library/stats' && method === 'GET') {
@@ -610,7 +587,7 @@ export function createApi(
         return true
       }
       if (error instanceof TaskManagerError) {
-        const status = error.code === 'TASK_NOT_FOUND' ? 404 : 409
+        const status = error.code === 'TASK_NOT_FOUND' ? 404 : error.code.startsWith('INVALID_') ? 400 : 409
         sendError(res, status, error.code, error.message)
         return true
       }

@@ -63,7 +63,8 @@ export interface VolumeDetail extends VolumeSummary {
   chapters: ChapterInfo[]
 }
 
-export type TaskState = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted'
+export type TaskState = 'queued' | 'running' | 'verifying' | 'importing' | 'completed' |
+  'cancelling' | 'cancelled' | 'failed' | 'interrupted'
 
 export interface TaskProgress {
   phase: string
@@ -93,6 +94,8 @@ export interface DownloadRequest {
   sourceUrl: string
   title: string
   bangumi?: { id: number; title: string }
+  language?: string
+  editionId?: string
   author: string
   volumes: string
   volumeNames: string[]
@@ -102,6 +105,7 @@ export interface DownloadRequest {
 
 export interface TaskRecord {
   id: string
+  attemptId?: string
   state: TaskState
   createdAt: string
   updatedAt: string
@@ -124,6 +128,9 @@ export interface LibraryEntry {
   id: string
   bookId: string
   sourceId: string
+  bangumiSubjectId?: number
+  language?: string
+  editionId?: string
   title: string
   author: string
   volumeNames: string[]
@@ -136,6 +143,7 @@ export interface LibraryEntry {
   sha256: string
   createdAt: string
   taskId: string
+  previousTaskIds?: string[]
   integrity: 'ok' | 'failed' | 'unknown'
 }
 

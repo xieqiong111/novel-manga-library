@@ -26,11 +26,43 @@ describe('robots.txt compliance (requirement #10)', () => {
     expect(safeHttpUrl('https://www.bilinovel.com/novel/1.html')).not.toBeNull()
     expect(safeHttpUrl('http://127.0.0.1/')).toBeNull()
     expect(safeHttpUrl('https://u:p@example.com/')).toBeNull()
+    expect(safeHttpUrl('http://[::ffff:127.0.0.1]/')).toBeNull()
+    expect(safeHttpUrl('http://localhost./')).toBeNull()
   })
 })
 
 describe('PoliteFetcher rate limiting and redirect revalidation', () => {
   const logger = createLogger('/tmp/ln-test-logs')
+
+  it('times out the body even after headers have arrived and cancels its reader', async () => {
+    const cancel = vi.fn()
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(new ReadableStream({ cancel }), { status: 200 })))
+    const fetcher = new PoliteFetcher({ userAgent: 'test', minIntervalMs: 0, timeoutMs: 15, respectRobots: false, logger })
+    try {
+      await expect(fetcher.getText('https://example.com/')).rejects.toMatchObject({ name: 'TimeoutError' })
+      expect(cancel).toHaveBeenCalledTimes(2)
+    } finally {
+      await fetcher.close()
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('enforces the streaming size limit when Content-Length is absent', async () => {
+    const chunk = new Uint8Array(1024 * 1024)
+    vi.stubGlobal('fetch', async () => new Response(new ReadableStream({
+      start(controller) {
+        for (let i = 0; i < 9; i++) controller.enqueue(chunk)
+        controller.close()
+      },
+    })))
+    const fetcher = new PoliteFetcher({ userAgent: 'test', minIntervalMs: 0, timeoutMs: 1000, respectRobots: false, logger })
+    try {
+      await expect(fetcher.getText('https://example.com/')).rejects.toMatchObject({ status: 413 })
+    } finally {
+      await fetcher.close()
+      vi.unstubAllGlobals()
+    }
+  })
 
   it('never sends credentials and sets an identifying User-Agent', async () => {
     const calls: Array<{ url: string; init: RequestInit }> = []

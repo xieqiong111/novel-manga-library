@@ -5,8 +5,12 @@ import argparse
 from collections import Counter
 import base64
 from contextlib import closing, contextmanager
+import ctypes
 from decimal import Decimal
+import errno
 import fcntl
+from functools import lru_cache
+import hashlib
 import json
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from itertools import islice
@@ -567,13 +571,74 @@ def chapter_destination(directories, filename, folder, existing):
     return parent / filename
 
 
+def file_digest(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024**2), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def sync_directory(directory):
+    fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+@lru_cache(maxsize=2048)
+def verified_archive(file, fingerprint):
+    # The fingerprint invalidates the cache when the file changes or is replaced.
+    with ZipFile(file) as archive:
+        entries = archive.infolist()
+        images = [entry for entry in entries if not entry.is_dir()
+                  and PurePosixPath(entry.filename).suffix.lower() in IMAGE_SUFFIXES]
+        if not images or len(entries) > 20000 or sum(entry.file_size for entry in entries) > ARCHIVE_LIMIT:
+            raise ArchiveError("invalid CBZ page count or expanded size")
+        if len({entry.filename for entry in entries}) != len(entries) or any(entry.file_size <= 0 for entry in images):
+            raise ArchiveError("invalid or duplicate CBZ pages")
+        bad = archive.testzip()
+        if bad is not None:
+            raise ArchiveError("CBZ failed ZIP CRC verification")
+        return archive.comment, len(images)
+
+
+def verified_cbz(file):
+    if file.is_symlink():
+        raise ArchiveError("CBZ is a symbolic link")
+    stat = file.stat()
+    if stat.st_size > ARCHIVE_LIMIT:
+        raise ArchiveError("CBZ exceeds archive size limit")
+    return verified_archive(file, (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns))
+
+
+def publish_new_cbz(staging, destination):
+    try:
+        os.link(staging, destination)
+    except OSError as error:
+        if error.errno not in (errno.EOPNOTSUPP, errno.EPERM):
+            raise
+        # The Linux container can publish atomically on filesystems without hard links.
+        renameat2 = getattr(ctypes.CDLL(None, use_errno=True), "renameat2", None)
+        if renameat2 is None:
+            raise ArchiveError("filesystem cannot safely publish a new CBZ") from error
+        renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        renameat2.restype = ctypes.c_int
+        at_fdcwd, rename_noreplace = -100, 1
+        if renameat2(at_fdcwd, os.fsencode(staging), at_fdcwd, os.fsencode(destination), rename_noreplace) != 0:
+            number = ctypes.get_errno()
+            raise OSError(number, os.strerror(number), destination) from error
+
+
 def archive_status(destination, filename, selected, failed, *, packed=False):
     if destination.is_file() and not destination.is_symlink():
         try:
-            with ZipFile(destination) as archive:
-                if archive.comment == archive_signature(selected, packed=packed):
-                    return {"filename": filename}
-        except BadZipFile:
+            signature, pages = verified_cbz(destination)
+            counts = [row["pageCount"] for row in selected]
+            if signature == archive_signature(selected, packed=packed) and (not all(counts) or pages == sum(counts)):
+                return {"filename": filename}
+        except (ArchiveError, BadZipFile, OSError, RuntimeError):
             return {"filename": None, "archiveFailed": True}
     return {"filename": None, **({"archiveFailed": True} if failed else {})}
 
@@ -589,14 +654,19 @@ def volume_coverage(directories):
             if file.is_symlink() or not re.fullmatch(r"第[0-9]{2,4}卷\.cbz", file.name):
                 continue
             try:
-                with ZipFile(file) as archive:
-                    saved = json.loads(archive.comment)
+                signature, pages = verified_cbz(file)
+                saved = json.loads(signature)
                 if isinstance(saved, dict) and saved.get("version") == 1 and isinstance(saved.get("chapters"), list):
                     coverage = packed if saved.get("kind") == "complete-volume" else legacy
-                    for row in saved["chapters"]:
-                        if isinstance(row, list) and len(row) == 2 and all(type(value) is int for value in row):
-                            coverage.setdefault(tuple(row), file)
-            except (BadZipFile, OSError, ValueError, UnicodeError):
+                    rows = saved["chapters"]
+                    if not rows or any(not isinstance(row, list) or len(row) != 2 or
+                                       any(type(value) is not int for value in row) for row in rows):
+                        continue
+                    if all(row[1] > 0 for row in rows) and pages != sum(row[1] for row in rows):
+                        continue
+                    for row in rows:
+                        coverage.setdefault(tuple(row), file)
+            except (ArchiveError, BadZipFile, OSError, ValueError, UnicodeError, RuntimeError):
                 continue
     return legacy, packed
 
@@ -741,21 +811,30 @@ def write_cbz(client, root, manga, filename, title, number, chapters, directorie
         raise ArchiveError("too many chapters for one volume archive")
     if destination.is_symlink():
         raise ArchiveError("existing CBZ is a symbolic link")
-    if destination.exists():
-        with ZipFile(destination) as current:
-            if current.comment == signature:
-                return False
-            if chapter_files is not None:
-                raise ArchiveError("preserving the existing volume CBZ")
-            try:
-                previous = json.loads(current.comment)
-            except (UnicodeError, ValueError):
-                raise ArchiveError("existing CBZ belongs to a different exporter") from None
-            if not isinstance(previous, dict) or previous.get("version") != 1 or not isinstance(previous.get("chapters"), list):
-                raise ArchiveError("existing CBZ belongs to a different exporter")
-            current_ids = {row["id"] for row in chapters}
-            if any(not row or row[0] not in current_ids for row in previous["chapters"]):
-                raise ArchiveError("the source's chapter set shrank or changed edition; preserving the previous CBZ")
+    existed = destination.exists()
+    if existed:
+        previous_signature, pages = verified_cbz(destination)
+        if previous_signature == signature:
+            if all(chapter["pageCount"] > 0 for chapter in chapters) and pages != sum(chapter["pageCount"] for chapter in chapters):
+                raise ArchiveError("existing CBZ image count does not match recorded chapters")
+            return False
+        if chapter_files is not None:
+            raise ArchiveError("preserving the existing volume CBZ")
+        try:
+            previous = json.loads(previous_signature)
+        except (UnicodeError, ValueError):
+            raise ArchiveError("existing CBZ belongs to a different exporter") from None
+        if not isinstance(previous, dict) or previous.get("version") != 1 or not isinstance(previous.get("chapters"), list):
+            raise ArchiveError("existing CBZ belongs to a different exporter")
+        current_ids = {row["id"] for row in chapters}
+        if any(not isinstance(row, list) or len(row) != 2 or type(row[0]) is not int or
+               row[0] not in current_ids for row in previous["chapters"]):
+            raise ArchiveError("the source's chapter set shrank or changed edition; preserving the previous CBZ")
+        previous_hash = file_digest(destination)
+
+    if chapter_files is not None and shutil.disk_usage(root).free < sum(file.stat().st_size for file in chapter_files):
+        raise ArchiveError("insufficient free space for complete volume CBZ")
+
     with tempfile.NamedTemporaryFile(prefix=".suwayomi-", suffix=".tmp", dir=root, delete=False) as temporary:
         staging = Path(temporary.name)
         try:
@@ -777,6 +856,8 @@ def write_cbz(client, root, manga, filename, title, number, chapters, directorie
             temporary.flush()
             os.fsync(temporary.fileno())
             staging.chmod(0o600)
+            if verified_cbz(staging) != (signature, page_count):
+                raise ArchiveError("generated CBZ did not pass verification")
             if folder == directories[0]:
                 prepare_series_folder(folder, manga)
             elif folder.parent == directories[0]:
@@ -789,14 +870,62 @@ def write_cbz(client, root, manga, filename, title, number, chapters, directorie
                 if series is None or series.is_symlink() or folder.is_symlink():
                     raise ArchiveError("invalid previous manga destination")
                 prepare_series_folder(series, manga)
-            if chapter_files is None:
+            if staging.stat().st_dev != folder.stat().st_dev:
+                digest = file_digest(staging)
+                with tempfile.NamedTemporaryFile(prefix=".suwayomi-", suffix=".tmp", dir=folder, delete=False) as target:
+                    local = Path(target.name)
+                    try:
+                        with staging.open("rb") as source:
+                            shutil.copyfileobj(source, target, 1024**2)
+                        target.flush()
+                        os.fsync(target.fileno())
+                        if file_digest(local) != digest:
+                            raise ArchiveError("CBZ staging copy checksum mismatch")
+                        staging.unlink()
+                    except BaseException:
+                        local.unlink(missing_ok=True)
+                        raise
+                    staging = local
+            if existed:
+                if destination.is_symlink() or file_digest(destination) != previous_hash:
+                    raise ArchiveError("existing CBZ changed during export")
                 os.replace(staging, destination)
             else:
-                os.link(staging, destination)
+                publish_new_cbz(staging, destination)
+            sync_directory(folder)
         finally:
             staging.unlink(missing_ok=True)
     logging.info("exported %s in %s (%d pages)", destination.name, folder.name, page_count)
     return True
+
+
+def backup_chapter(source, saved):
+    try:
+        os.link(source, saved)
+    except FileExistsError:
+        if saved.is_symlink() or not saved.is_file() or file_digest(saved) != file_digest(source):
+            raise ArchiveError("preserving a conflicting backed-up chapter") from None
+    except OSError as error:
+        if error.errno not in (errno.EXDEV, errno.EOPNOTSUPP, errno.EPERM):
+            raise
+        # Stage on the backup filesystem and verify the copy before publication.
+        with tempfile.NamedTemporaryFile(prefix=".suwayomi-", suffix=".tmp", dir=saved.parent, delete=False) as copy:
+            staging = Path(copy.name)
+            try:
+                with source.open("rb") as original:
+                    shutil.copyfileobj(original, copy, 1024**2)
+                copy.flush()
+                os.fsync(copy.fileno())
+                if file_digest(staging) != file_digest(source):
+                    raise ArchiveError("chapter backup checksum mismatch")
+                try:
+                    publish_new_cbz(staging, saved)
+                except FileExistsError:
+                    if saved.is_symlink() or not saved.is_file() or file_digest(saved) != file_digest(staging):
+                        raise ArchiveError("preserving a conflicting backed-up chapter") from None
+            finally:
+                staging.unlink(missing_ok=True)
+    sync_directory(saved.parent)
 
 
 def pack_complete_volumes(client, root, manga, chapters, directories, assignments, existing, history):
@@ -825,9 +954,12 @@ def pack_complete_volumes(client, root, manga, chapters, directories, assignment
             if (series / destination.name).exists():
                 continue
             # Leave a previously exported volume in place if the catalog or source edition changes.
-            if destination.exists() and not archive_status(
-                    destination, destination.name, selected, False, packed=True)["filename"]:
-                continue
+            if destination.exists():
+                status = archive_status(destination, destination.name, selected, False, packed=True)
+                if status.get("archiveFailed"):
+                    raise ArchiveError("complete volume CBZ failed verification; preserving the source chapters")
+                if not status["filename"]:
+                    continue
             originals = [existing.get(name) for name in names]
             chapter_files = [source or backup / name for name, source in zip(names, originals)]
             if any(source.is_symlink() or not source.is_file() or
@@ -841,12 +973,9 @@ def pack_complete_volumes(client, root, manga, chapters, directories, assignment
                 if source is None or not archive_status(source, name, [chapter], False)["filename"]:
                     continue
                 saved = backup / name
-                try:
-                    os.link(source, saved)
-                except FileExistsError:
-                    if saved.is_symlink() or not saved.samefile(source):
-                        raise ArchiveError("preserving a conflicting backed-up chapter") from None
+                backup_chapter(source, saved)
                 source.unlink()
+                sync_directory(source.parent)
             if history:
                 history.remember_volume(manga, selected, destination)
         except (ArchiveError, OSError, BadZipFile, RuntimeError) as exc:

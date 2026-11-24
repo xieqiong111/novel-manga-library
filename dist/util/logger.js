@@ -32,7 +32,7 @@ export function createLogger(logsDir, level = 'info', echo = false) {
         }
     };
     const write = (lvl, scope, event, fields) => {
-        if (LEVELS[lvl] < LEVELS[level])
+        if (closed || LEVELS[lvl] < LEVELS[level])
             return;
         const entry = { ts: new Date().toISOString(), level: lvl, scope, event, ...redact(fields ?? {}) };
         ring.push(entry);
@@ -92,18 +92,26 @@ export function createLogger(logsDir, level = 'info', echo = false) {
 }
 /** Never persist secrets or full query strings with tokens. */
 function redact(fields) {
-    const out = {};
-    for (const [key, value] of Object.entries(fields)) {
-        if (/(apikey|token|secret|password|cookie|authorization)/i.test(key)) {
-            out[key] = '[redacted]';
+    const clean = (value, depth) => {
+        if (depth > 5)
+            return '[nested]';
+        if (typeof value === 'string') {
+            return value
+                .replace(/\b(?:Bearer|Basic)\s+[A-Za-z0-9+/=_.-]+/gi, '[redacted authorization]')
+                .replace(/https?:\/\/[^\s/@]+(?::[^\s/@]*)?@/gi, '[redacted credentials]@')
+                .replace(/(https?:\/\/[^\s"'<>?]+)\?[^\s"'<>]*/gi, '$1?[redacted query]')
+                .replace(/((?:api[-_]?key|token|secret|password)=)[^\s&;,]+/gi, '$1[redacted]')
+                .slice(0, 500);
         }
-        else if (typeof value === 'string' && value.length > 500) {
-            out[key] = `${value.slice(0, 500)}…`;
+        if (Array.isArray(value))
+            return value.slice(0, 50).map((item) => clean(item, depth + 1));
+        if (value && typeof value === 'object') {
+            return Object.fromEntries(Object.entries(value).slice(0, 50).map(([key, item]) => [
+                key, /(?:api[-_]?key|token|secret|password|cookie|authorization)/i.test(key) ? '[redacted]' : clean(item, depth + 1),
+            ]));
         }
-        else {
-            out[key] = value;
-        }
-    }
-    return out;
+        return value;
+    };
+    return clean(fields, 0);
 }
 //# sourceMappingURL=logger.js.map

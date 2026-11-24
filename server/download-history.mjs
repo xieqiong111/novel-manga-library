@@ -9,9 +9,9 @@ const archiveImages = /\.(?:jpe?g|png|webp|gif|avif|bmp|jxl)$/i
 export async function readDshTasks(directory) {
   if (!directory || !path.isAbsolute(directory)) return []
   const entries = await readdir(directory, { withFileTypes: true })
-  const results = await Promise.all(entries.filter((entry) =>
-    entry.isFile() && dshTaskId.test(path.basename(entry.name, '.json')) && entry.name.endsWith('.json')
-  ).map(async ({ name }) => {
+  const candidates = entries.filter((entry) =>
+    entry.isFile() && dshTaskId.test(path.basename(entry.name, '.json')) && entry.name.endsWith('.json'))
+  const readOne = async ({ name }) => {
     try {
       const file = await open(path.join(directory, name), constants.O_RDONLY | constants.O_NOFOLLOW)
       try {
@@ -31,8 +31,13 @@ export async function readDshTasks(directory) {
         await file.close()
       }
     } catch { return null }
-  }))
-  return results.filter(Boolean)
+  }
+  const results = []
+  for (let offset = 0; offset < candidates.length; offset += 32) {
+    const batch = await Promise.all(candidates.slice(offset, offset + 32).map(readOne))
+    results.push(...batch.filter(Boolean))
+  }
+  return results
 }
 
 async function readBytes(file, length, position) {
@@ -117,9 +122,7 @@ export function createSavedFileHistory(settings, runtime, logger) {
   return async function savedFiles() {
     if (!cache || Date.now() >= expires) {
       expires = Date.now() + 60_000
-      const indexed = new Set((runtime.library?.list({ limit: 200 }) ?? [])
-        .filter((entry) => entry.storageFolder !== undefined)
-        .map((entry) => path.join(entry.storageFolder, entry.relativePath)))
+      const indexed = new Set(runtime.library?.archivedPaths() ?? [])
       cache = Promise.allSettled([
         findFiles(settings.config?.novelStorageRoot, 'novel', indexed),
         findFiles(settings.mangaStorageRoot, 'manga', new Set()),

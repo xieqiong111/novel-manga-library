@@ -195,9 +195,11 @@ const liveStore: TaskStore = {
   },
 }
 
-export function useTasks() {
+const noSubscription = () => () => {}
+
+export function useTasks(enabled = true) {
   return useSyncExternalStore(
-    IS_LIVE ? liveSubscribe : mockSubscribe,
+    enabled ? IS_LIVE ? liveSubscribe : mockSubscribe : noSubscription,
     IS_LIVE ? () => liveTasks : () => mockTasks,
     IS_LIVE ? () => liveTasks : () => mockTasks,
   )

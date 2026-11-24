@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -71,5 +71,17 @@ describe('TaskStore persistence + crash recovery (requirement #9)', () => {
   it('rejects path traversal in task ids', async () => {
     const store = new TaskStore(dir, logger)
     await expect(store.create(record('../escape'))).rejects.toThrow()
+  })
+
+  it('surfaces failed writes and keeps the last durable record', async () => {
+    const store = new TaskStore(dir, logger)
+    await store.create(record('task_write'))
+    const file = path.join(dir, 'task_write.json')
+    await rm(file)
+    await mkdir(file)
+    await expect(store.update('task_write', (task) => ({ ...task, state: 'completed' }))).rejects.toThrow()
+    expect(store.get('task_write')?.state).toBe('running')
+    await rm(file, { recursive: true })
+    await expect(store.update('task_write', (task) => ({ ...task, state: 'failed' }))).resolves.toMatchObject({ state: 'failed' })
   })
 })

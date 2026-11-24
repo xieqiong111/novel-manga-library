@@ -1,20 +1,93 @@
 import { constants } from 'node:fs'
-import { copyFile, lstat, mkdir, readdir, rename, realpath, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { copyFile, link, lstat, mkdir, open, readdir, rename, realpath, readFile, rm } from 'node:fs/promises'
 import path from 'node:path'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { folderWithin, readDownloadFolders } from './download-folders.js'
 import { verifyEpub } from './integrity.js'
+import { paginate } from './pagination.js'
 import type { DownloadRequest, LibraryEntry, LibraryIndexFile, TaskArtifact } from '../types.js'
-import { readJson } from '../util/json.js'
-import { bangumiFolderName, safeResolve, sanitizeFileName } from '../util/paths.js'
+import { atomicWriteJson, atomicWriteText, syncDirectory } from '../util/json.js'
+import { assertSafeRelative, bangumiFolderName, safeResolve, sanitizeFileName } from '../util/paths.js'
 import type { Logger } from '../util/logger.js'
+
+interface EditionIdentity {
+  sourceId: string
+  bookId: string
+  bangumiSubjectId?: number
+  language?: string
+  editionId?: string
+}
+
+interface ImportJournal {
+  version: 1
+  entry: LibraryEntry
+  previousSha256: string | null
+}
+
+interface RemovalJournal {
+  version: 1
+  entry: LibraryEntry
+  observedSha256: string | null
+}
+
+type ImportInput = Pick<DownloadRequest, 'title' | 'author' | 'sourceId' | 'bookId' | 'bangumi' | 'language' | 'editionId'> & {
+  artifact: TaskArtifact
+  taskId: string
+  signal?: AbortSignal
+}
+
+function sameEdition(left: EditionIdentity, right: EditionIdentity): boolean {
+  return left.sourceId === right.sourceId && left.bookId === right.bookId &&
+    left.bangumiSubjectId === right.bangumiSubjectId && left.language === right.language && left.editionId === right.editionId
+}
+
+function locationKey(entry: Pick<LibraryEntry, 'storageFolder' | 'relativePath'>): string {
+  return JSON.stringify([entry.storageFolder ?? null, entry.relativePath])
+}
+
+class LibraryConflict extends Error {
+  constructor(readonly code: string, message: string) {
+    super(`${code}: ${message}`)
+  }
+}
+
+async function optionalJson<T>(file: string): Promise<T | undefined> {
+  const text = await readFile(file, 'utf8').catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return undefined
+    throw error
+  })
+  return text === undefined ? undefined : JSON.parse(text) as T
+}
+
+async function fileInfo(file: string) {
+  return lstat(file).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return undefined
+    throw error
+  })
+}
+
+async function fileHash(file: string): Promise<string | null> {
+  const handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return undefined
+    throw error
+  })
+  if (!handle) return null
+  try {
+    if (!(await handle.stat()).isFile()) throw new Error('Expected a regular novel archive file')
+    const hash = createHash('sha256')
+    for await (const bytes of handle.createReadStream({ autoClose: false })) hash.update(bytes)
+    return hash.digest('hex')
+  } finally {
+    await handle.close()
+  }
+}
 
 /** On-disk EPUB library with integrity verification and a portable index. */
 export class Library {
   private entries = new Map<string, LibraryEntry>()
-  private loaded = false
-  private chain: Promise<void> = Promise.resolve()
-  private additions: Promise<unknown> = Promise.resolve()
+  private legacyConflicts = new Map<string, LibraryEntry[]>()
+  private loading?: Promise<void>
+  private mutations: Promise<unknown> = Promise.resolve()
 
   constructor(private readonly libraryDir: string, private readonly logger: Logger,
     private readonly storage?: { root: string; settingsFile: string }) {}
@@ -27,8 +100,8 @@ export class Library {
 
   async filePath(entry: LibraryEntry): Promise<string> {
     const root = await this.root(entry.storageFolder)
-    const file = safeResolve(root, entry.relativePath)
-    if (entry.storageFolder !== undefined && (await realpath(file)) !== file) {
+    const file = safeResolve(root, assertSafeRelative(entry.relativePath))
+    if (await realpath(file) !== safeResolve(await realpath(root), entry.relativePath)) {
       throw new Error('Novel archive contains a symbolic link')
     }
     return file
@@ -38,165 +111,259 @@ export class Library {
     return safeResolve(this.libraryDir, 'index.json')
   }
 
-  async load(): Promise<void> {
-    if (this.loaded) return
-    this.loaded = true
-    const file = await readJson<LibraryIndexFile>(this.indexPath, { version: 1, entries: [] })
-    // One physical EPUB path maps to exactly one index entry. Older builds of
-    // add() appended a second entry when the same volume was downloaded again;
-    // the file was overwritten in place, so the stale entry kept a sha256 that
-    // no longer matches and verify() reported a false corruption forever.
-    // Heal such indexes on load by keeping the newest entry for each path.
+  private get journalPath(): string {
+    return safeResolve(this.libraryDir, '.pending-epub-import.json')
+  }
+
+  private get removalPath(): string {
+    return safeResolve(this.libraryDir, '.pending-epub-removal.json')
+  }
+
+  load(): Promise<void> {
+    this.loading ??= this.loadIndex().catch((error) => {
+      this.loading = undefined
+      throw error
+    })
+    return this.loading
+  }
+
+  private async loadIndex(): Promise<void> {
+    const file = await optionalJson<LibraryIndexFile>(this.indexPath)
+    if (file !== undefined && (file?.version !== 1 || !Array.isArray(file.entries))) throw new Error('Unsupported library index')
     const byPath = new Map<string, LibraryEntry>()
-    let duplicates = 0
-    for (const entry of file.entries ?? []) {
-      if (!entry || typeof entry.id !== 'string') continue
-      const key = JSON.stringify([entry.storageFolder ?? null, entry.relativePath ?? entry.id])
+    const conflicts = new Map<string, LibraryEntry[]>()
+    for (const entry of file?.entries ?? []) {
+      if (!entry || typeof entry.id !== 'string' || typeof entry.relativePath !== 'string') {
+        throw new Error('Invalid library index entry')
+      }
+      assertSafeRelative(entry.relativePath)
+      const key = locationKey(entry)
       const previous = byPath.get(key)
       if (!previous) {
         byPath.set(key, entry)
-        continue
+      } else {
+        const ambiguous = !sameEdition(previous, entry) || JSON.stringify(previous.volumeNames) !== JSON.stringify(entry.volumeNames)
+        if (ambiguous || conflicts.has(key)) {
+          const rows = conflicts.get(key) ?? [previous]
+          rows.push(entry)
+          conflicts.set(key, rows)
+        }
+        if ((entry.createdAt ?? '') >= (previous.createdAt ?? '')) byPath.set(key, entry)
       }
-      duplicates++
-      if ((entry.createdAt ?? '') >= (previous.createdAt ?? '')) byPath.set(key, entry)
     }
     this.entries = new Map([...byPath.values()].map((entry) => [entry.id, entry]))
-    if (duplicates > 0) {
-      this.logger.warn('library', 'deduplicated_index', { removed: duplicates, remaining: this.entries.size })
-      await this.persist()
+    this.legacyConflicts = conflicts
+    await this.recoverImport()
+    await this.recoverRemoval()
+    if (file && byPath.size < file.entries.length) {
+      // Preserve the old index on read, including ambiguous historical ownership.
+      this.logger.warn('library', 'legacy_index_has_duplicate_paths', { count: file.entries.length - byPath.size })
     }
   }
 
   list(options: { query?: string; limit?: number } = {}): LibraryEntry[] {
+    return this.page(options).items
+  }
+
+  page(options: { query?: string; limit?: number; offset?: number; integrity?: LibraryEntry['integrity'];
+    sort?: 'recent' | 'name' | 'size' } = {}) {
     const query = (options.query ?? '').trim().toLowerCase()
-    return [...this.entries.values()]
-      .filter((e) => !query || `${e.title} ${e.author} ${e.volumeNames.join(' ')}`.toLowerCase().includes(query))
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-      .slice(0, Math.min(Math.max(options.limit ?? 20, 1), 200))
+    const byName = options.sort === 'name'
+    const bySize = options.sort === 'size'
+    const entries = [...this.entries.values()]
+      .filter((e) => (!options.integrity || e.integrity === options.integrity) &&
+        (!query || `${e.title} ${e.author} ${e.volumeNames.join(' ')}`.toLowerCase().includes(query)))
+      .sort((a, b) => (byName ? a.title.localeCompare(b.title, 'zh-Hans-CN') : bySize ? b.bytes - a.bytes : 0) ||
+        b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id))
+    return paginate(entries, options)
+  }
+
+  forTask(taskId: string): LibraryEntry[] {
+    return [...this.entries.values()].filter((entry) => entry.taskId === taskId || entry.previousTaskIds?.includes(taskId))
+  }
+
+  archivedPaths(): string[] {
+    return [...this.entries.values()].flatMap((entry) =>
+      entry.storageFolder === undefined ? [] : [path.join(entry.storageFolder, entry.relativePath)])
   }
 
   get(id: string): LibraryEntry | undefined {
     return this.entries.get(id)
   }
 
-  stats(): { total: number; bytes: number; chapters: number; ok: number; failed: number } {
-    const all = [...this.entries.values()]
-    return {
-      total: all.length,
-      bytes: all.reduce((sum, e) => sum + e.bytes, 0),
-      chapters: all.reduce((sum, e) => sum + e.chapterCount, 0),
-      ok: all.filter((e) => e.integrity === 'ok').length,
-      failed: all.filter((e) => e.integrity !== 'ok').length,
+  stats() {
+    const totals = { total: this.entries.size, bytes: 0, chapters: 0, ok: 0, failed: 0 }
+    const sources = new Map<string, number>()
+    for (const entry of this.entries.values()) {
+      totals.bytes += entry.bytes
+      totals.chapters += entry.chapterCount
+      if (entry.integrity === 'ok') totals.ok++
+      else totals.failed++
+      sources.set(entry.sourceId, (sources.get(entry.sourceId) ?? 0) + 1)
     }
+    return { ...totals, bySource: Object.fromEntries(sources) }
   }
 
-  /** Copy one verified artefact into the library. Returns null on integrity failure. */
-  add(input: {
-    artifact: TaskArtifact
-    title: string
-    bangumi?: DownloadRequest['bangumi']
-    author: string
-    sourceId: string
-    bookId: string
-    taskId: string
-  }): Promise<LibraryEntry | null> {
-    const result = this.additions.then(() => this.ingest(input))
-    this.additions = result.catch(() => undefined)
-    return result
+  /** One writer stages and commits one verified volume at a time. */
+  add(input: ImportInput): Promise<LibraryEntry | null> {
+    return this.mutate(() => this.ingest(input))
   }
 
-  private async ingest(input: Parameters<Library['add']>[0]): Promise<LibraryEntry | null> {
-    await this.load()
-    const integrity = await verifyEpub(input.artifact.path)
+  private async ingest(input: ImportInput): Promise<LibraryEntry | null> {
+    input.signal?.throwIfAborted()
+    const identity: EditionIdentity = {
+      sourceId: input.sourceId, bookId: input.bookId, bangumiSubjectId: input.bangumi?.id,
+      language: input.language, editionId: input.editionId,
+    }
+    if (!identity.sourceId || !identity.bookId || !input.artifact.volumeNames.length ||
+        input.artifact.volumeNames.some((name) => typeof name !== 'string' || !name.trim())) {
+      throw new Error('LIBRARY_IDENTITY_UNKNOWN: EPUB requires a source work and named volumes')
+    }
     const base = input.bangumi ? bangumiFolderName(input.bangumi.title) : sanitizeFileName(input.title, 'novel')
-    const volume = sanitizeFileName(input.artifact.volumeNames[0] ?? base, `${randomUUID().slice(0, 8)}.epub`)
-    const relativePath = path.join(base, volume.endsWith('.epub') ? volume : `${volume}.epub`)
+    const volume = sanitizeFileName(input.artifact.volumeNames[0]!, 'volume')
+    const relativePath = path.join(base, volume.toLowerCase().endsWith('.epub') ? volume : volume + '.epub')
     const storageFolder = this.storage?.root
       ? (await readDownloadFolders(this.storage.settingsFile)).novelFolder ?? undefined : undefined
     const root = await this.root(storageFolder)
     const destination = safeResolve(root, relativePath)
     const series = path.dirname(destination)
     await mkdir(series, { recursive: true })
-    if (storageFolder !== undefined && !(await lstat(series)).isDirectory()) throw new Error('Invalid novel series directory')
-    if (input.bangumi) {
-      if (!(await lstat(series)).isDirectory()) throw new Error('Invalid Bangumi novel destination')
-      const file = path.join(series, '.studio-novel.json')
-      const identity = { subjectId: input.bangumi.id, sourceId: input.sourceId, bookId: input.bookId }
-      const previous = await lstat(file).catch((error) => {
-        if (error.code !== 'ENOENT') throw error
-        return null
-      })
-      if (previous) {
-        const record = previous.isFile() ? await readJson<typeof identity | null>(file, null) : null
-        if (record?.subjectId !== identity.subjectId || record.sourceId !== identity.sourceId || record.bookId !== identity.bookId) {
-          throw new Error('BANGUMI_FOLDER_CONFLICT: 此目录已被其他轻小说版本使用。')
-        }
-      } else {
-        const current = [...this.entries.values()].filter((entry) => entry.storageFolder === storageFolder &&
-          path.dirname(entry.relativePath) === base)
-        const tracked = new Set(current.flatMap((entry) => [
-          path.basename(entry.relativePath), path.basename(entry.relativePath) + '.sha256',
-        ]))
-        if (current.some((entry) => entry.bookId !== input.bookId || entry.sourceId !== input.sourceId) ||
-            (await readdir(series)).some((name) => !name.startsWith('.') && !tracked.has(name))) {
-          throw new Error('BANGUMI_FOLDER_CONFLICT: 此目录已被其他轻小说版本使用。')
-        }
-        await writeFile(file, JSON.stringify(identity), { flag: 'wx', mode: 0o600 })
-      }
-    }
-    const staging = `${destination}.${randomUUID()}.tmp`
-    try {
-      await copyFile(input.artifact.path, staging, constants.COPYFILE_EXCL)
-      await writeFile(`${staging}.sha256`, `${integrity.sha256}  ${path.basename(destination)}\n`, { flag: 'wx' })
-      await rename(staging, destination)
-      await rename(`${staging}.sha256`, `${destination}.sha256`)
-    } finally {
-      await rm(staging, { force: true })
-      await rm(`${staging}.sha256`, { force: true })
+    await this.checkSeries(root, series)
+
+    const indexed = [...this.entries.values()].filter((entry) => entry.storageFolder === storageFolder &&
+      path.dirname(entry.relativePath) === base)
+    const marker = path.join(series, '.studio-novel.json')
+    const markerInfo = await fileInfo(marker)
+    const conflict = () => new LibraryConflict(input.bangumi ? 'BANGUMI_FOLDER_CONFLICT' : 'LIBRARY_FOLDER_CONFLICT',
+      '此目录已被其他轻小说版本使用，或存在来源无法确认的 EPUB。')
+    let subjectId: number | undefined
+    if (markerInfo) {
+      const previous = markerInfo.isFile()
+        ? await optionalJson<{ subjectId: number; sourceId: string; bookId: string }>(marker) : undefined
+      if (!previous || previous.subjectId !== identity.bangumiSubjectId ||
+          previous.sourceId !== identity.sourceId || previous.bookId !== identity.bookId) throw conflict()
+      subjectId = previous.subjectId
     }
 
-    const fileStat = await stat(destination)
-    const entry: LibraryEntry = {
-      id: `lib_${randomUUID().replace(/-/g, '').slice(0, 16)}`,
-      bookId: input.bookId,
-      sourceId: input.sourceId,
-      title: input.title,
-      author: input.author,
-      volumeNames: input.artifact.volumeNames,
-      chapterCount: integrity.chapters,
-      relativePath,
-      ...(storageFolder !== undefined ? { storageFolder } : {}),
-      bytes: fileStat.size,
-      sha256: integrity.sha256,
-      createdAt: new Date().toISOString(),
-      taskId: input.taskId,
-      integrity: integrity.ok ? 'ok' : 'failed',
+    if (indexed.some((entry) => this.legacyConflicts.has(locationKey(entry)) ||
+      !sameEdition({ ...entry, bangumiSubjectId: entry.bangumiSubjectId ?? subjectId }, identity))) {
+      throw conflict()
     }
-    // Re-downloading the same volume overwrites the EPUB in place. Replace any
-    // older entry for that exact path so its stale sha256 can never make a
-    // later verify() fail with a false corruption report.
-    let replaced = 0
-    for (const [id, existing] of this.entries) {
-      if (existing.relativePath === relativePath && existing.storageFolder === storageFolder) {
-        this.entries.delete(id)
-        replaced++
+    const tracked = new Set(indexed.map((entry) => path.basename(entry.relativePath)))
+    const files = await readdir(series)
+    if (files.some((name) => /\.epub$/i.test(name) && !tracked.has(name))) throw conflict()
+    const previous = indexed.find((entry) => entry.relativePath === relativePath)
+    if (previous && JSON.stringify(previous.volumeNames) !== JSON.stringify(input.artifact.volumeNames)) throw conflict()
+    const oldHash = await fileHash(destination)
+    const sidecarInfo = await fileInfo(destination + '.sha256')
+    if (oldHash !== (previous?.sha256 ?? null) || (sidecarInfo && (!previous || !sidecarInfo.isFile()))) {
+      throw conflict()
+    }
+
+    const id = `lib_${randomUUID().replace(/-/g, '').slice(0, 16)}`
+    const staging = this.stagingPath(series, id)
+    let journalStarted = false
+    try {
+      await copyFile(input.artifact.path, staging, constants.COPYFILE_EXCL)
+      const integrity = await verifyEpub(staging)
+      if (!integrity.ok) return null
+      if (input.artifact.sha256 && input.artifact.sha256 !== integrity.sha256) {
+        throw new Error('INTEGRITY_FAILED: EPUB changed after task verification')
       }
+      if (previous?.sha256 === integrity.sha256 && previous.taskId === input.taskId) return previous
+
+      const handle = await open(staging, 'r')
+      try { await handle.sync() } finally { await handle.close() }
+      await syncDirectory(series)
+      await syncDirectory(root)
+      input.signal?.throwIfAborted()
+      const entry: LibraryEntry = {
+        ...identity, id, title: input.title, author: input.author, relativePath, storageFolder,
+        volumeNames: input.artifact.volumeNames, chapterCount: integrity.chapters,
+        bytes: integrity.bytes, sha256: integrity.sha256, createdAt: new Date().toISOString(),
+        taskId: input.taskId, integrity: 'ok',
+        ...(previous?.sha256 === integrity.sha256
+          ? { previousTaskIds: [...new Set([previous.taskId, ...(previous.previousTaskIds ?? [])])] } : {}),
+      }
+      const journal: ImportJournal = { version: 1, entry, previousSha256: oldHash }
+      // Once the intent may be durable, leave staging for recovery on every error.
+      journalStarted = true
+      await atomicWriteJson(this.journalPath, journal)
+      await this.commitImport(journal)
+      return entry
+    } finally {
+      if (!journalStarted) await rm(staging, { force: true })
     }
-    this.entries.set(entry.id, entry)
-    if (replaced > 0) {
-      this.logger.info('library', 'replaced', { relativePath, replaced })
+  }
+
+  private async checkSeries(root: string, series: string): Promise<void> {
+    if (!(await lstat(series)).isDirectory() ||
+        await realpath(series) !== safeResolve(await realpath(root), path.relative(root, series))) {
+      throw new Error('Novel archive contains a symbolic link')
     }
-    await this.persist()
-    this.logger.info('library', 'added', {
-      id: entry.id, relativePath, integrity: entry.integrity, problems: integrity.problems,
-    })
-    return integrity.ok ? entry : null
+  }
+
+  private stagingPath(series: string, id: string): string {
+    if (!/^lib_[a-f0-9]{16}$/.test(id)) throw new Error('Invalid EPUB import journal identifier')
+    return path.join(series, `.pending-${id}.tmp`)
+  }
+
+  private async recoverImport(): Promise<void> {
+    const journal = await optionalJson<ImportJournal>(this.journalPath)
+    if (journal === undefined) return
+    await this.commitImport(journal)
+    this.logger.info('library', 'recovered_import', { id: journal.entry.id })
+  }
+
+  private async commitImport(journal: ImportJournal): Promise<void> {
+    const { entry, previousSha256 } = journal
+    if (journal.version !== 1 || !entry || !/^[a-f0-9]{64}$/.test(entry.sha256) ||
+        (previousSha256 !== null && !/^[a-f0-9]{64}$/.test(previousSha256))) {
+      throw new Error('Invalid EPUB import journal')
+    }
+    const relative = assertSafeRelative(entry.relativePath)
+    if (relative.split(path.sep).length !== 2 || !/\.epub$/i.test(relative)) throw new Error('Invalid EPUB import path')
+    if (this.legacyConflicts.has(locationKey(entry))) {
+      throw new LibraryConflict('LIBRARY_RECOVERY_CONFLICT', 'The legacy index has multiple owners for the import path')
+    }
+    const root = await this.root(entry.storageFolder)
+    const destination = safeResolve(root, relative)
+    const series = path.dirname(destination)
+    const staging = this.stagingPath(series, entry.id)
+    await this.checkSeries(root, series)
+    const hash = await fileHash(destination)
+    if (hash !== entry.sha256) {
+      if (hash !== previousSha256 || await fileHash(staging) !== entry.sha256) {
+        throw new Error('LIBRARY_RECOVERY_CONFLICT: EPUB import contains unexpected files; backup and inspect the journal')
+      }
+      if (previousSha256 === null) await link(staging, destination)
+      else await rename(staging, destination)
+    }
+    const sidecar = destination + '.sha256'
+    const sidecarInfo = await fileInfo(sidecar)
+    if (sidecarInfo && !sidecarInfo.isFile()) throw new Error('Invalid EPUB checksum file')
+    await atomicWriteText(sidecar, `${entry.sha256}  ${path.basename(destination)}\n`)
+    const next = new Map(this.entries)
+    for (const [id, other] of next) {
+      if (other.storageFolder === entry.storageFolder && other.relativePath === entry.relativePath) next.delete(id)
+    }
+    next.set(entry.id, entry)
+    await this.persist(next)
+    await rm(staging, { force: true })
+    await syncDirectory(series)
+    await rm(this.journalPath, { force: true })
+    await syncDirectory(this.libraryDir)
+    this.logger.info('library', 'added', { id: entry.id, relativePath: relative })
   }
 
   /** Re-verify a single entry or the whole library. */
-  async verify(id?: string): Promise<Array<{ id: string; ok: boolean; problems: string[]; sha256Changed: boolean }>> {
-    await this.load()
-    const targets = id ? [this.entries.get(id)].filter((e): e is LibraryEntry => !!e) : [...this.entries.values()]
+  verify(id?: string): Promise<Array<{ id: string; ok: boolean; problems: string[]; sha256Changed: boolean }>> {
+    return this.mutate(() => this.verifyEntries(id))
+  }
+
+  private async verifyEntries(id?: string) {
+    const next = new Map([...this.entries].map(([key, entry]) => [key, { ...entry }]))
+    const targets = id ? [next.get(id)].filter((e): e is LibraryEntry => !!e) : [...next.values()]
     const results: Array<{ id: string; ok: boolean; problems: string[]; sha256Changed: boolean }> = []
     for (const entry of targets) {
       try {
@@ -210,7 +377,7 @@ export class Library {
         results.push({ id: entry.id, ok: false, problems: [String(error)], sha256Changed: false })
       }
     }
-    await this.persist()
+    if (targets.length) await this.persist(next)
     return results
   }
 
@@ -219,39 +386,79 @@ export class Library {
     for (const entry of this.entries.values()) {
       try {
         const sidecar = `${await this.filePath(entry)}.sha256`
-        if (entry.storageFolder !== undefined && !(await lstat(sidecar)).isFile()) continue
+        if (!(await lstat(sidecar)).isFile()) continue
         out.push((await readFile(sidecar, 'utf8')).trim())
       } catch { /* no sidecar for older entries */ }
     }
     return out
   }
 
-  async remove(id: string): Promise<boolean> {
+  remove(id: string): Promise<boolean> {
+    return this.mutate(() => this.removeEntry(id))
+  }
+
+  private async removeEntry(id: string): Promise<boolean> {
     const entry = this.entries.get(id)
     if (!entry) return false
-    const root = await this.root(entry.storageFolder)
-    const file = safeResolve(root, entry.relativePath)
-    if (entry.storageFolder !== undefined && await realpath(path.dirname(file)) !== path.dirname(file)) {
-      throw new Error('Novel archive contains a symbolic link')
+    if (this.legacyConflicts.has(locationKey(entry))) {
+      throw new LibraryConflict('LIBRARY_FOLDER_CONFLICT', 'The legacy index has multiple owners for this path')
     }
-    await rm(file, { force: true })
-    await rm(`${file}.sha256`, { force: true })
-    this.entries.delete(id)
-    await this.persist()
+    const root = await this.root(entry.storageFolder)
+    const file = safeResolve(root, assertSafeRelative(entry.relativePath))
+    await this.checkSeries(root, path.dirname(file))
+    const journal: RemovalJournal = { version: 1, entry, observedSha256: await fileHash(file) }
+    await atomicWriteJson(this.removalPath, journal)
+    await this.commitRemoval(journal)
     return true
   }
 
-  private persist(): Promise<void> {
-    const file: LibraryIndexFile = { version: 1, entries: [...this.entries.values()] }
-    this.chain = this.chain
-      .catch(() => undefined)
-      .then(async () => {
-        await mkdir(this.libraryDir, { recursive: true })
-        await writeFile(`${this.indexPath}.tmp`, `${JSON.stringify(file, null, 2)}\n`, 'utf8')
-        const { rename } = await import('node:fs/promises')
-        await rename(`${this.indexPath}.tmp`, this.indexPath)
-      })
-      .catch((error) => this.logger.error('library', 'persist_failed', { error: String(error) }))
-    return this.chain
+  private async recoverRemoval(): Promise<void> {
+    const journal = await optionalJson<RemovalJournal>(this.removalPath)
+    if (journal === undefined) return
+    await this.commitRemoval(journal)
+    this.logger.info('library', 'recovered_removal', { id: journal.entry.id })
+  }
+
+  private async commitRemoval(journal: RemovalJournal): Promise<void> {
+    const { entry, observedSha256 } = journal
+    if (journal.version !== 1 || !entry?.id ||
+        (observedSha256 !== null && !/^[a-f0-9]{64}$/.test(observedSha256))) throw new Error('Invalid EPUB removal journal')
+    const previous = this.entries.get(entry.id)
+    if (this.legacyConflicts.has(locationKey(entry)) ||
+        (previous && locationKey(previous) !== locationKey(entry))) throw new Error('LIBRARY_REMOVAL_CONFLICT')
+    const root = await this.root(entry.storageFolder)
+    const file = safeResolve(root, assertSafeRelative(entry.relativePath))
+    const series = path.dirname(file)
+    await this.checkSeries(root, series)
+    const current = await fileHash(file)
+    if (current !== null && (!previous || current !== observedSha256)) throw new Error('LIBRARY_REMOVAL_CONFLICT')
+    if (previous) {
+      await rm(file, { force: true })
+      await rm(`${file}.sha256`, { force: true })
+      await syncDirectory(series)
+      const next = new Map(this.entries)
+      next.delete(entry.id)
+      await this.persist(next)
+    }
+    await rm(this.removalPath, { force: true })
+    await syncDirectory(this.libraryDir)
+  }
+
+  private async persist(entries: Map<string, LibraryEntry>): Promise<void> {
+    const ambiguous = [...this.legacyConflicts.values()].flat().filter((entry) => !entries.has(entry.id))
+    const file: LibraryIndexFile = { version: 1, entries: [...ambiguous, ...entries.values()] }
+    await atomicWriteJson(this.indexPath, file)
+    this.entries = entries
+  }
+
+  private mutate<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.mutations.then(async () => {
+      await this.load()
+      await this.recoverImport()
+      await this.recoverRemoval()
+      return operation()
+    })
+    this.mutations = result.catch(() => undefined)
+    return result
   }
 }

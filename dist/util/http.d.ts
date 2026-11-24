@@ -25,14 +25,17 @@ export declare class PoliteFetcher {
     private readonly queues;
     private readonly robots;
     private readonly opts;
+    private readonly dispatcher;
     constructor(opts: PoliteFetcherOptions);
     getBuffer(rawUrl: string, allowedHosts?: readonly string[]): Promise<ArrayBuffer>;
     getText(rawUrl: string, options?: {
         encoding?: string;
         allowedHosts?: readonly string[];
     }): Promise<string>;
+    close(): Promise<void>;
+    private requestWithRetry;
     private rawFetch;
-    private before;
+    private queuedFetch;
     private robotsFor;
     private pathAllowed;
 }

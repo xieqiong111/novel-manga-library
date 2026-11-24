@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { isIP } from 'node:net';
 export class PathViolation extends Error {
     code = 'PATH_VIOLATION';
     constructor(message) {
@@ -81,7 +82,7 @@ export function assertSafePublicUrl(raw, allowedHosts) {
         url = new URL(raw);
     }
     catch {
-        throw new UrlViolation(`Malformed URL: ${raw}`);
+        throw new UrlViolation('Malformed source URL');
     }
     if (url.protocol !== 'http:' && url.protocol !== 'https:') {
         throw new UrlViolation(`Unsupported scheme: ${url.protocol}`);
@@ -92,7 +93,7 @@ export function assertSafePublicUrl(raw, allowedHosts) {
     if (url.port && !['80', '443'].includes(url.port)) {
         throw new UrlViolation(`Non-standard port is refused: ${url.port}`);
     }
-    const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+    const host = url.hostname.toLowerCase().replace(/^\[|\]$|\.$/g, '');
     if (isPrivateHost(host))
         throw new UrlViolation(`Private host is refused: ${host}`);
     if (allowedHosts && allowedHosts.length > 0) {
@@ -102,28 +103,27 @@ export function assertSafePublicUrl(raw, allowedHosts) {
     }
     return url;
 }
-export function isPrivateHost(host) {
-    if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local') || host.endsWith('.internal'))
+export function isPrivateHost(input) {
+    const host = input.toLowerCase().replace(/^\[|\]$|\.$/g, '');
+    if (host.includes('%'))
         return true;
-    if (host === '::1' || host === '0.0.0.0' || host === '::')
+    if (!host.includes('.') && isIP(host) === 0)
         return true;
-    const ipv4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
-    if (ipv4) {
-        const [a, b] = [Number(ipv4[1]), Number(ipv4[2])];
-        if (a === 10 || a === 127 || a === 0 || a === 169 && b === 254)
-            return true;
-        if (a === 172 && b >= 16 && b <= 31)
-            return true;
-        if (a === 192 && b === 168)
-            return true;
-        if (a === 100 && b >= 64 && b <= 127)
-            return true;
-        if (a >= 224)
-            return true;
+    if (host.endsWith('.localhost') || host.endsWith('.local') || host.endsWith('.internal') || host.endsWith('.home.arpa'))
+        return true;
+    if (isIP(host) === 4) {
+        const [a, b, c] = host.split('.').map(Number);
+        return a === 0 || a === 10 || a === 127 || a >= 224 ||
+            (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254) ||
+            (a === 172 && b >= 16 && b <= 31) || (a === 192 && (b === 168 || b === 0 && (c === 0 || c === 2))) ||
+            (a === 198 && (b === 18 || b === 19 || b === 51 && c === 100)) || (a === 203 && b === 0 && c === 113);
     }
-    // IPv6 unique-local / link-local.
-    if (/^f[cd]/i.test(host) || /^fe[89ab]/i.test(host))
-        return true;
+    if (isIP(host) === 6) {
+        // Global unicast only. This also rejects mapped IPv4, ULA, link-local and NAT64 well-known prefixes.
+        const canonical = new URL(`http://[${host}]/`).hostname.slice(1, -1);
+        const first = Number.parseInt(canonical.split(':')[0] ?? '', 16);
+        return (first & 0xe000) !== 0x2000 || /^(?:2001:db8:|2002:|3fff:)/.test(canonical);
+    }
     return false;
 }
 //# sourceMappingURL=paths.js.map

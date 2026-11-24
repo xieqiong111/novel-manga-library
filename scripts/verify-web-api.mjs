@@ -53,11 +53,8 @@ async function freePort() {
 }
 
 function childEnv(port, dataDir, libraryDir, extra = {}) {
-  const env = { ...process.env }
-  delete env.LN_DATA_DIR
-  delete env.LN_LIBRARY_DIR
-  delete env.LN_BFF_TOKEN
-  delete env.LN_BFF_ALLOW_DELETE
+  const env = Object.fromEntries(['HOME', 'PATH', 'TMPDIR', 'SystemRoot', 'LN_DART_BINARY']
+    .filter((key) => process.env[key] !== undefined).map((key) => [key, process.env[key]]))
   return {
     ...env,
     LN_BFF_HOST: '127.0.0.1',
@@ -90,6 +87,7 @@ function startServer(env, tag) {
 }
 
 async function stopServer(instance) {
+  if (!instance) return
   const { child } = instance
   if (!child || child.exitCode !== null) return
   child.kill('SIGTERM')

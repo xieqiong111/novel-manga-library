@@ -5,7 +5,7 @@ import { PageHeader } from '@/components/common/PageHeader'
 import { CoverArt } from '@/components/novel/CoverArt'
 import { novels as MOCK_NOVELS } from '@/data/mock'
 import { useAsync } from '@/hooks/useAsync'
-import { novelApi } from '@/services/novelApi'
+import { listTaskPage, novelApi } from '@/services/novelApi'
 import { DEMO, IS_LIVE } from '@/services/runtime'
 import { cn, formatBytes } from '@/services/utils'
 import type { TaskState } from '@/types'
@@ -51,32 +51,27 @@ export function StatsPage() {
 
 function LiveStats() {
   const { data } = useAsync(async () => {
-    const [stats, tasks, library, featured] = await Promise.all([
+    const [stats, taskPage, library, featured] = await Promise.all([
       novelApi.getLibraryStats(),
-      novelApi.listTasks(),
-      novelApi.listLibrary(),
+      listTaskPage({ offset: 0, query: '' }),
+      novelApi.listLibrary('', 5),
       novelApi.getFeatured(),
     ])
-    return { stats, tasks, library, featured }
+    return { stats, taskPage, library, featured }
   }, [])
 
   const stats = data?.stats
-  const tasks = data?.tasks ?? []
+  const taskPage = data?.taskPage
+  const taskCount = taskPage?.total ?? stats?.tasks ?? 0
   const library = data?.library ?? []
   const featured = data?.featured ?? []
 
   const taskGroups = (Object.keys(TASK_LABELS) as TaskState[])
-    .map((state) => ({ state, label: TASK_LABELS[state], value: tasks.filter((task) => task.state === state).length }))
+    .map((state) => ({ state, label: TASK_LABELS[state], value: taskPage?.counts[state] ?? 0 }))
     .filter((group) => group.value > 0)
   const maxTasks = Math.max(1, ...taskGroups.map((group) => group.value))
 
-  const sourceGroups = Array.from(
-    library.reduce((map, item) => {
-      const key = item.tags[0] || '未知书源'
-      map.set(key, (map.get(key) ?? 0) + 1)
-      return map
-    }, new Map<string, number>()),
-  )
+  const sourceGroups = Object.entries(stats?.bySource ?? {})
     .map(([name, value], index) => ({ name, value, color: PIE_COLORS[index % PIE_COLORS.length] }))
     .sort((a, b) => b.value - a.value)
     .slice(0, 6)
@@ -92,10 +87,10 @@ function LiveStats() {
       />
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <StatCard icon={<Download className="h-4 w-4" />} label="全部任务" value={stats?.tasks ?? '—'} delta={`${stats?.queued ?? 0} 进行/排队`} />
+        <StatCard icon={<Download className="h-4 w-4" />} label="全部任务" value={taskPage?.total ?? stats?.tasks ?? '—'} delta={`${stats?.queued ?? 0} 进行/排队`} />
         <StatCard icon={<BookOpen className="h-4 w-4" />} label="EPUB 总量" value={stats?.epubs ?? '—'} delta={`${stats?.chapters ?? 0} 章`} />
         <StatCard icon={<HardDrive className="h-4 w-4" />} label="占用空间" value={stats ? formatBytes(stats.bytes) : '—'} delta={`${stats?.failed ?? 0} 校验失败`} />
-        <StatCard icon={<Activity className="h-4 w-4" />} label="校验通过" value={stats?.verified ?? '—'} delta={`${tasks.length} 条任务记录`} />
+        <StatCard icon={<Activity className="h-4 w-4" />} label="校验通过" value={stats?.verified ?? '—'} delta={`${taskCount} 条任务记录`} />
       </div>
 
       <div className="mt-5 grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]">
@@ -105,7 +100,7 @@ function LiveStats() {
             right={
               <span className="flex items-center gap-1.5 text-[10px] text-ink-muted">
                 <TrendingUp className="h-3 w-3 text-positive" />
-                共 {tasks.length} 个任务
+                共 {taskCount} 个任务
               </span>
             }
           />
@@ -151,7 +146,7 @@ function LiveStats() {
               >
                 <div className="absolute inset-[18px] flex flex-col items-center justify-center rounded-full bg-surface">
                   <span className="text-[9px] text-ink-muted">EPUB</span>
-                  <span className="mt-0.5 text-[20px] font-bold text-ink">{library.length}</span>
+                  <span className="mt-0.5 text-[20px] font-bold text-ink">{stats?.epubs ?? 0}</span>
                 </div>
               </div>
               <div className="flex-1 space-y-2.5">

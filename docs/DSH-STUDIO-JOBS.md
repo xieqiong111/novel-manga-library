@@ -35,3 +35,9 @@
 如果提交时 Studio 连接中断，先从任务列表核对服务是否已经接单。托管模式遇到配置或连接错误时会返回明确的错误，DSH 等待 Studio 恢复后再处理。
 
 小说完成后从 `artifacts[].location` 或 `novel_library` 读取 EPUB 位置，通过 `downloadPath` 获取文件。漫画查询 `manga_komga_status` 的 `chapters[].location` 或任务历史的 `archive.location`。已核实的文件会返回 `relativePath` 和 Studio 容器内的 `storagePath`。部署配置提供绝对 NAS 目录时也会返回 `nasPath`。Agent 提交漫画任务后只需查进度和位置，每话由归档服务自动生成一个 CBZ。
+
+## 查询多页记录
+
+`novel_tasks` 和 `novel_library` 的 list 支持 `offset` 与 `limit`。使用响应中的 `nextOffset` 读取下一页，值为空时已读完。任务列表支持关键词与状态筛选。旧 DSH 任务的记录可以只读挂载。能与 Studio 索引关联的 EPUB 在任务详情里提供下载链接，其他文件可从已保存记录查看。
+
+待执行的状态为 `queued`。下载、校验、入库分别为 `running`、`verifying`、`importing`。取消会经过 `cancelling`，等当前执行退出后转到 `cancelled`。重启时遗留的活动记录会标成 `interrupted`，可明确执行重试。

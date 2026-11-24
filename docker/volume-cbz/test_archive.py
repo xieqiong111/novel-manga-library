@@ -1,4 +1,6 @@
 import json
+import errno
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -7,7 +9,8 @@ from xml.etree import ElementTree
 from zipfile import BadZipFile, ZipFile
 
 from archive import (
-    ArchiveError, BangumiFolderConflict, DownloadHistory, Suwayomi, archive_catalog, archive_directories, run_once,
+    ArchiveError, BangumiFolderConflict, DownloadHistory, Suwayomi, archive_catalog, archive_directories, archive_status,
+    backup_chapter, run_once,
     series_directory, standalone_chapters, storage_roots, write_cbz,
 )
 
@@ -36,6 +39,45 @@ def old_volume(client, root, manga, volume, chapters, previous=()):
 
 
 class ChapterArchiveTests(unittest.TestCase):
+    def test_signature_does_not_hide_damaged_pages(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manga = {"id": 17, "sourceId": "99", "title": "樣本"}
+            row = chapter(1, "第1话")
+            old_volume(FakeSuwayomi(), root, manga, 1, [row])
+            destination = next(root.rglob("*.cbz"))
+            self.assertEqual(archive_status(destination, destination.name, [row], False), {"filename": destination.name})
+            with ZipFile(destination) as archive:
+                info = archive.getinfo("000001.jpg")
+                signature = archive.comment
+            damaged = bytearray(destination.read_bytes())
+            damaged[info.header_offset + 30 + len(info.filename)] ^= 0xff
+            destination.write_bytes(damaged)
+            with ZipFile(destination) as archive:
+                self.assertEqual(archive.comment, signature)
+            self.assertEqual(archive_status(destination, destination.name, [row], False),
+                             {"filename": None, "archiveFailed": True})
+            with self.assertRaises(ArchiveError):
+                old_volume(FakeSuwayomi(), root, manga, 1, [row])
+            self.assertEqual(destination.read_bytes(), damaged)
+
+    def test_cross_device_chapter_backup_validates_the_copied_bytes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, backup = root / "chapter.cbz", root / "backup.cbz"
+            source.write_bytes(b"chapter bytes")
+            real_link = os.link
+
+            def cross_device_link(first, second):
+                if first == source:
+                    raise OSError(errno.EXDEV, "cross-device link")
+                return real_link(first, second)
+
+            with patch("archive.os.link", side_effect=cross_device_link):
+                backup_chapter(source, backup)
+            self.assertEqual(backup.read_bytes(), source.read_bytes())
+            self.assertTrue(source.is_file())
+
     def test_complete_volume_uses_catalog_order_and_actual_zero_based_bookmarks(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

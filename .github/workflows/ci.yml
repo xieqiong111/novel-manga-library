@@ -1,0 +1,82 @@
+name: Library CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            web/package-lock.json
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: 3.13.7
+      - name: Install Node dependencies
+        run: |
+          npm ci --no-audit
+          npm --prefix web ci --no-audit
+      - name: TypeScript and tracked output
+        run: |
+          npm run typecheck
+          npm run build
+          git diff --exit-code -- dist
+          test -z "$(git ls-files --others --exclude-standard -- dist)"
+      - name: Build and test Dart engine
+        env:
+          PUB_HOSTED_URL: https://pub.dev
+          DART_SUPPRESS_ANALYTICS: 'true'
+        run: |
+          sed -i "s|https://pub.flutter-io.cn|https://pub.dev|g" vendor/bili_novel_packer/pubspec.lock
+          npm run test:dart
+          (cd vendor/bili_novel_packer && dart test)
+      - name: Run Vitest and build Studio
+        env:
+          VITE_API_MODE: live
+        run: |
+          LN_DART_BINARY="$PWD/vendor/bili_novel_packer/build/bnp_headless" npm test
+          npm run web:build
+          npm run verify:web
+      - name: Python CBZ regression tests
+        run: python3 -m unittest discover -s docker/volume-cbz -p 'test_*.py'
+
+  images:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Build Linux amd64 images
+        run: |
+          docker build --platform linux/amd64 --build-arg PUB_HOSTED_URL=https://pub.dev --target studio -t novel-manga-library-web:ci .
+          docker build --platform linux/amd64 --build-arg PUB_HOSTED_URL=https://pub.dev --target runtime -t dsh-plugin-lightnovel:ci .
+      - name: Start Studio and read health
+        shell: bash
+        run: |
+          cleanup() {
+            result=$?
+            if [ "$result" -ne 0 ]; then
+              docker logs library-ci >&2 || true
+            fi
+            docker rm -f library-ci >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          docker run -d --name library-ci -e LN_BFF_HOST=0.0.0.0 -e LN_BFF_PORT=8080 \
+            -e LN_BFF_DATA_DIR=/tmp/library-ci -e LN_OFFLINE_ONLY=true -e LN_ENABLED_SOURCES=fixture \
+            -p 127.0.0.1:5273:8080 novel-manga-library-web:ci
+          curl --retry 12 --retry-all-errors --retry-delay 1 --fail --silent --show-error \
+            http://127.0.0.1:5273/api/health | jq -e '.ok and .dart'

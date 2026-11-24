@@ -12,7 +12,7 @@ export class TaskStore {
     logger;
     tasks = new Map();
     chains = new Map();
-    loaded = false;
+    loading;
     constructor(tasksDir, logger) {
         this.tasksDir = tasksDir;
         this.logger = logger;
@@ -20,28 +20,35 @@ export class TaskStore {
     filePath(id) {
         return path.join(this.tasksDir, `${assertSafeRelative(id)}.json`);
     }
-    cancelFilePath(id) {
-        return path.join(this.tasksDir, `${assertSafeRelative(id)}.cancel`);
+    cancelFilePath(id, attemptId) {
+        return path.join(this.tasksDir, `${assertSafeRelative(id)}${attemptId ? '.' + assertSafeRelative(attemptId) : ''}.cancel`);
     }
-    async load() {
-        if (this.loaded)
-            return;
-        this.loaded = true;
+    load() {
+        this.loading ??= this.loadRecords().catch((error) => {
+            this.loading = undefined;
+            throw error;
+        });
+        return this.loading;
+    }
+    async loadRecords() {
         let files;
         try {
             files = await readdir(this.tasksDir);
         }
-        catch {
+        catch (error) {
+            if (error.code !== 'ENOENT')
+                throw error;
             return;
         }
         for (const file of files.filter((f) => f.endsWith('.json'))) {
             const record = await readJson(path.join(this.tasksDir, file), null);
-            if (!record?.id)
+            if (!record?.id || file !== `${record.id}.json`)
                 continue;
-            if (record.state === 'running' || record.state === 'queued') {
+            if (['queued', 'running', 'verifying', 'importing', 'cancelling'].includes(record.state)) {
                 record.state = 'interrupted';
+                record.progress = { ...record.progress, phase: 'interrupted' };
                 record.error = { code: 'INTERRUPTED', message: 'Process restarted while the task was active' };
-                record.updatedAt = new Date().toISOString();
+                record.finishedAt = record.updatedAt = new Date().toISOString();
                 await atomicWriteJson(this.filePath(record.id), record);
                 this.logger.warn('store', 'recovered_interrupted_task', { taskId: record.id });
             }
@@ -51,45 +58,57 @@ export class TaskStore {
     list() {
         return [...this.tasks.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
     }
+    records() {
+        return this.tasks.values();
+    }
     get(id) {
         return this.tasks.get(id);
     }
     async create(record) {
-        // Validate *before* mutating in-memory state. persist() logs write failures
-        // rather than rejecting (so a full disk cannot crash a running task), which
-        // would otherwise let an unsafe id be accepted in memory with no file.
         assertSafeRelative(record.id);
         await this.load();
-        this.tasks.set(record.id, record);
-        await this.persist(record);
-        return record;
+        return this.serialize(record.id, async () => {
+            if (this.tasks.has(record.id))
+                throw new Error(`TASK_ALREADY_EXISTS: ${record.id}`);
+            await this.persist(record);
+            return record;
+        });
     }
     async update(id, mutate) {
         assertSafeRelative(id);
-        const current = this.tasks.get(id);
-        if (!current)
-            throw new Error(`TASK_NOT_FOUND: ${id}`);
-        const next = mutate(structuredClone(current));
-        next.updatedAt = new Date().toISOString();
-        this.tasks.set(id, next);
-        await this.persist(next);
-        return next;
+        await this.load();
+        return this.serialize(id, async () => {
+            const current = this.tasks.get(id);
+            if (!current)
+                throw new Error(`TASK_NOT_FOUND: ${id}`);
+            const next = mutate(structuredClone(current));
+            next.updatedAt = new Date().toISOString();
+            await this.persist(next);
+            return next;
+        });
     }
     async remove(id) {
         assertSafeRelative(id);
-        this.tasks.delete(id);
-        await rm(this.filePath(id), { force: true });
-        await rm(this.cancelFilePath(id), { force: true });
+        await this.load();
+        await this.serialize(id, async () => {
+            await rm(this.filePath(id), { force: true });
+            this.tasks.delete(id);
+            await rm(this.cancelFilePath(id), { force: true });
+        });
     }
-    persist(record) {
-        const snapshot = structuredClone(record);
-        const previous = this.chains.get(record.id) ?? Promise.resolve();
-        const next = previous
-            .catch(() => undefined)
-            .then(() => atomicWriteJson(this.filePath(record.id), snapshot))
-            .catch((error) => this.logger.error('store', 'persist_failed', { taskId: record.id, error: String(error) }));
-        this.chains.set(record.id, next);
-        return next;
+    async persist(record) {
+        await atomicWriteJson(this.filePath(record.id), record);
+        this.tasks.set(record.id, record);
+    }
+    serialize(id, operation) {
+        const result = (this.chains.get(id) ?? Promise.resolve()).then(operation);
+        const tail = result.then(() => undefined, () => undefined);
+        this.chains.set(id, tail);
+        void tail.then(() => {
+            if (this.chains.get(id) === tail)
+                this.chains.delete(id);
+        });
+        return result;
     }
 }
 //# sourceMappingURL=store.js.map

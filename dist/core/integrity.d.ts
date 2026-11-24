@@ -1,6 +1,7 @@
 export interface ZipEntry {
     name: string;
     method: number;
+    checksum: number;
     compressedSize: number;
     uncompressedSize: number;
     localHeaderOffset: number;
@@ -20,5 +21,5 @@ export interface EpubIntegrity {
  */
 export declare function readZipEntries(buffer: Buffer): ZipEntry[];
 export declare function readZipEntry(buffer: Buffer, entry: ZipEntry): Buffer;
-/** Verify EPUB structure and every manifest reference. */
+/** Verify ZIP CRC, EPUB structure and every manifest reference. */
 export declare function verifyEpub(filePath: string): Promise<EpubIntegrity>;

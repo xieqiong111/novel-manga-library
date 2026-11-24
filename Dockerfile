@@ -14,6 +14,7 @@
 # ---------------------------------------------------------------------------
 ARG DEBIAN_BASE=debian:bookworm-slim
 ARG NODE_BASE=node:24-bookworm-slim
+ARG STUDIO_PYTHON_BASE=python:3.12-slim-bookworm
 
 # ---------------------------------------------------------------------------
 # Stage 1: compile the vendored Dart headless core for linux/amd64
@@ -58,9 +59,12 @@ ENV PATH="/opt/dart-sdk/bin:${PATH}" \
     PUB_HOSTED_URL=${PUB_HOSTED_URL}
 
 WORKDIR /build
-COPY vendor/bili_novel_packer/pubspec.yaml ./pubspec.yaml
+COPY vendor/bili_novel_packer/pubspec.yaml vendor/bili_novel_packer/pubspec.lock ./
 COPY vendor/bili_novel_packer/analysis_options.yaml ./analysis_options.yaml
-RUN dart pub get
+RUN if [ "$PUB_HOSTED_URL" != "https://pub.flutter-io.cn" ]; then \
+      sed -i "s|https://pub.flutter-io.cn|$PUB_HOSTED_URL|g" pubspec.lock; \
+    fi \
+ && dart pub get --enforce-lockfile
 
 COPY vendor/bili_novel_packer/lib ./lib
 COPY vendor/bili_novel_packer/bin ./bin
@@ -70,6 +74,59 @@ COPY vendor/bili_novel_packer/bin ./bin
 RUN mkdir -p /opt/bnp \
  && dart compile exe bin/headless.dart -o /opt/bnp/bnp_headless \
  && test -x /opt/bnp/bnp_headless
+
+# Studio compiles and ships its API, web UI, and Dart binary in one image.
+FROM ${NODE_BASE} AS studio-builder
+WORKDIR /opt/lightnovel
+COPY package.json package-lock.json tsconfig.json ./
+COPY dist ./dist
+COPY scripts/prepare.mjs ./scripts/prepare.mjs
+RUN npm ci --no-audit --no-fund
+COPY src ./src
+COPY server ./server
+RUN npm run build
+
+COPY web/package.json web/package-lock.json ./web/
+RUN npm --prefix web ci --no-audit --no-fund
+COPY web ./web
+RUN VITE_API_MODE=live npm run web:build \
+ && npm prune --omit=dev --no-audit --no-fund
+
+FROM ${STUDIO_PYTHON_BASE} AS studio-bangumi
+ARG BANGUMIKOMGA_REV=3ce5304707e4b8860b48d701b03f89bf421bac7e
+WORKDIR /opt/studio-bangumikomga
+ADD https://codeload.github.com/chu-shen/BangumiKomga/tar.gz/${BANGUMIKOMGA_REV} /tmp/bangumi-upstream.tar.gz
+RUN tar -xzf /tmp/bangumi-upstream.tar.gz --strip-components=1 \
+    && rm /tmp/bangumi-upstream.tar.gz \
+    && pip install --no-cache-dir -r install/requirements.txt \
+    && mkdir -p /opt/studio-python-libs \
+    && find /usr/local/lib/python3.12/lib-dynload -name '*.so' -exec ldd {} + \
+      | awk '/=> \// && $1 !~ /^(libc|libm|libdl|libpthread|librt|libutil)\.so/ { print $3 }' \
+      | sort -u | xargs -r -I '{}' cp -L '{}' /opt/studio-python-libs/
+COPY --chmod=0644 docker/bangumikomga/config.py config/config.py
+COPY --chmod=0644 docker/bangumikomga/studio.py .
+
+FROM ${NODE_BASE} AS studio
+WORKDIR /opt/lightnovel
+COPY --from=studio-bangumi /usr/local/bin/python3.12 /usr/local/bin/python3.12
+COPY --from=studio-bangumi /usr/local/lib/libpython3.12.so.1.0 /usr/local/lib/libpython3.12.so.1.0
+COPY --from=studio-bangumi /usr/local/lib/python3.12 /usr/local/lib/python3.12
+COPY --from=studio-bangumi /opt/studio-python-libs /opt/studio-python-libs
+COPY --from=studio-bangumi /opt/studio-bangumikomga /opt/studio-bangumikomga
+ENV LN_BANGUMIKOMGA_SCRIPT=/opt/studio-bangumikomga/studio.py \
+    LN_BANGUMIKOMGA_PYTHON=/usr/local/bin/python3.12 \
+    LN_BANGUMIKOMGA_LIBRARY_PATH=/opt/studio-python-libs:/usr/local/lib
+
+COPY --from=studio-builder /opt/lightnovel/dist ./dist
+COPY --from=studio-builder /opt/lightnovel/server ./server
+COPY --from=studio-builder /opt/lightnovel/web/dist ./web/dist
+COPY --from=studio-builder /opt/lightnovel/node_modules ./node_modules
+COPY package.json ./
+COPY test/fixtures ./test/fixtures
+COPY --from=dart-builder /opt/bnp/bnp_headless /opt/bnp/bnp_headless
+ENV NODE_ENV=production LN_DART_BINARY=/opt/bnp/bnp_headless LN_FIXTURES_DIR=/opt/lightnovel/test/fixtures
+EXPOSE 8080
+CMD ["node", "server/serve.mjs"]
 
 # ---------------------------------------------------------------------------
 # Stage 2: Node 24 + DSH CLI + plugin bundle

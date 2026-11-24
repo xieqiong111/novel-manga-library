@@ -181,7 +181,7 @@ async function shutdown(signal) {
   if (shuttingDown) return
   shuttingDown = true
   logger.info('webapi', 'shutdown', { signal })
-  server.close()
+  await new Promise((resolve) => server.close(resolve))
   settings.bangumiWorker?.stop()
   await settings.postDownload?.stop()
   await runtime.dispose()

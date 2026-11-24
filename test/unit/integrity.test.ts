@@ -136,7 +136,7 @@ it('recovers only saved EPUB/CBZ files and canonical completed DSH records', asy
   ])
   await symlink(validCbz, path.join(manga, '作品', '链接.cbz'))
   const files = createSavedFileHistory({ config: { novelStorageRoot: novel }, mangaStorageRoot: manga },
-    { library: { list: () => [{ storageFolder: '', relativePath: '已入库.epub' }] } }, { warn() {} })
+    { library: { archivedPaths: () => ['已入库.epub'] } }, { warn() {} })
   expect(await files()).toEqual({ errors: [], files: [
     expect.objectContaining({ type: 'novel', title: '旧书', files: [expect.objectContaining({ path: '旧书.epub' })] }),
     expect.objectContaining({ type: 'manga', title: '作品', files: [{ path: '作品/第1话.cbz', bytes: cbz.length }] }),

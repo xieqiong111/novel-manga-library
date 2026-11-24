@@ -215,7 +215,7 @@ it('accepts the separate Studio jobs key for job routes only', async () => {
   const jobTokenFile = path.join(dir, 'jobs.token')
   try {
     await writeFile(jobTokenFile, token, { mode: 0o600 })
-    const api = createApi({ dartAvailable: true, tasks: { list: () => [] } }, { jobTokenFile },
+    const api = createApi({ dartAvailable: true, tasks: { records: () => [] } }, { jobTokenFile },
       { warn() {} })
     async function request(method: string, route: string, credential = token) {
       let status = 0

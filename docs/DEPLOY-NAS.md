@@ -140,52 +140,33 @@ docker compose --profile verify run --rm verify
 
 ```text
 $LN_WEB_DIR/
-├── server/                 # BFF（只读挂载）
-├── dist/                   # 插件编译产物（只读）
-├── node_modules/           # 运行时依赖（只读；cheerio / opencc-js）
-├── package.json            # ESM 类型声明（只读）
-├── vendor/                 # Dart 源码与 fixture 依赖（只读）
-├── test/fixtures/          # 离线书源（只读）
-├── web/dist/               # Live 前端产物（只读）
-├── bnp_headless            # linux/amd64 Dart 可执行文件（只读）
+├── Dockerfile
 ├── docker-compose.web.yml
-└── data/                   # 可写：library / tasks / logs / index
+├── src/、dist/、server/、web/、vendor/、docker/ 等仓库文件
+└── .env                   # Compose 变量，存储路径可指向 NAS 卷
 ```
 
-### 4.2 准备构建产物
+### 4.2 构建 Studio 镜像
 
-在开发机（Node 24 + Dart）上：
+在 NAS 上保留完整代码副本。根 Dockerfile 的 `studio` 目标构建 live 前端、Node API 和 Linux amd64 Dart 引擎，并把 BangumiKomga 一起打包。生产容器只需挂载数据、轻小说、漫画和保存设置目录。
 
 ```bash
-npm ci
-npm run build                         # 插件 TypeScript -> dist/
-npm --prefix web ci
-VITE_API_MODE=live npm run web:build
+docker compose -f docker-compose.web.yml config --quiet
+docker compose -f docker-compose.web.yml build web
 ```
 
-把 `server/`、`dist/`、`package.json`、`vendor/`、`test/fixtures/`、`web/dist/` 与 `docker-compose.web.yml` 同步到 `$LN_WEB_DIR`。`node_modules/` 与 `bnp_headless` 建议直接复用已有的插件镜像，避免在 NAS 上重新编译 Dart：
-
-```bash
-docker create --name ln-web-deps dsh-plugin-lightnovel:1.0.0
-docker cp ln-web-deps:/opt/lightnovel/node_modules "$LN_WEB_DIR/"
-docker cp ln-web-deps:/opt/bnp/bnp_headless "$LN_WEB_DIR/"
-docker rm ln-web-deps
-```
-
-若没有该镜像，也可以构建根目录的 `Dockerfile`（会编译 linux/amd64 的 `bnp_headless`），或在 Node 24 容器内执行 `npm ci --omit=dev` 生成 `node_modules`。
+默认使用 Dart 国内镜像。可通过 `PUB_HOSTED_URL=https://pub.dev` 切换下载来源，构建仍检查 Dart 锁文件。
 
 ### 4.3 配置与启动
 
 在 `$LN_WEB_DIR/.env`：
 
 ```dotenv
-LN_DATA_DIR=/path/to/lightnovel-web-data
+LN_STUDIO_DATA_DIR=/path/to/existing-or-new-studio-data
 LN_UID=<id -u 的结果>
 LN_GID=<id -g 的结果>
 LN_WEB_PORT=5273
 LN_WEB_IMAGE=node:24-bookworm-slim
-# 或复用已构建的完整镜像（自带 Node + Dart）：
-# LN_WEB_IMAGE=dsh-plugin-lightnovel:1.0.0
 LN_WEB_NETWORK=dsh-lightnovel-net
 
 # 只读/离线部署建议：
@@ -211,7 +192,7 @@ LN_OFFLINE_ONLY=true
 docker network inspect dsh-lightnovel-net >/dev/null 2>&1   || docker network create --driver bridge --subnet 10.99.77.0/24        --gateway 10.99.77.1 dsh-lightnovel-net
 
 cd "$LN_WEB_DIR"
-docker compose -f docker-compose.web.yml up -d
+docker compose -f docker-compose.web.yml up -d web
 docker compose -f docker-compose.web.yml ps
 ```
 
@@ -244,23 +225,20 @@ curl -sI http://127.0.0.1:5273/ | head -1
 
 容器使用 `/api/auth/status` 做健康检查。脚本可使用管理员配置的 `LN_BFF_TOKEN`，或在只读场景使用独立的 [DSH 只读密钥](../web/README.md#komga-api-和-dsh-只读密钥)。
 
-### 4.5 升级与回滚
+### 4.5 升级、备份与回滚
+
+1. 记录旧容器的镜像 ID、Compose 文件、`.env` 和挂载路径。保留旧镜像或给它打一个回滚标签。
+2. 停止写入这些目录的 Studio、独立 DSH 与 CBZ 服务。对 Studio 数据、外部 EPUB/CBZ 目录、下载设置、认证和配置做 NAS 快照。备份含密钥的文件时沿用其读权限。
+3. 升级继续挂载原有路径。若以前只设置了 `LN_DATA_DIR`，保留该值，或将相同路径显式填入 `LN_STUDIO_DATA_DIR`。托管 DSH 可以通过 Studio 继续访问已归档数据。独立 DSH 使用不同的任务、书库和外部保存目录。
+4. 用升级镜像启动，检查健康和下载闭环。日志出现 `DATA_WRITER_BUSY` 时，检查共享路径是否已有另一个写入者。锁文件留在数据目录，进程退出时操作系统释放锁。
+5. 需要回滚时，先停止新版本。保留升级后数据的快照，将升级前的快照还原到另一组目录，再用旧镜像和 Compose 指向还原后的目录启动。
 
 ```bash
-# 前端更新
-npm --prefix web ci
-VITE_API_MODE=live npm run web:build
-docker compose -f docker-compose.web.yml restart web
-
-# BFF 更新（server/ 或 dist/）
-docker compose -f docker-compose.web.yml restart web
-
-# 回滚到旧静态版
-docker stop lightnovel-studio-web
-docker rename lightnovel-studio-web lightnovel-studio-web-live-bak
-docker rename lightnovel-studio-web-static-old lightnovel-studio-web
-docker start lightnovel-studio-web
+docker compose -f docker-compose.web.yml up -d --build web
+docker compose -f docker-compose.web.yml ps
 ```
+
+`LN_WEB_IMAGE` 设置 Node 基础镜像。`LN_STUDIO_WEB_IMAGE` 设置 Studio 成品镜像名，便于标记候选和回滚版本。反向代理终止 HTTPS 时，设置 `LN_STUDIO_SECURE_COOKIE=true` 和浏览器实际访问的 `LN_STUDIO_WEB_ORIGIN`。
 
 日志：
 

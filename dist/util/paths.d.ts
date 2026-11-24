@@ -20,4 +20,4 @@ export declare class UrlViolation extends Error {
  * send cookies or Authorization headers, so login/paywall bypass is impossible.
  */
 export declare function assertSafePublicUrl(raw: string, allowedHosts?: readonly string[]): URL;
-export declare function isPrivateHost(host: string): boolean;
+export declare function isPrivateHost(input: string): boolean;

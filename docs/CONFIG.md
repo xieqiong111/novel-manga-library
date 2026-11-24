@@ -124,3 +124,19 @@ novel_library {action:"verify"}   # 全库完整性复核
 ```
 
 `DART_UNAVAILABLE` 表示检索/详情仍可从本地索引工作，但下载需要编译 Dart 核心；参见 README「编译 Dart 核心」。
+
+## 写入者与书库身份
+
+推荐让 DSH 以 `LN_STUDIO_TASK_MODE=managed` 接入 Studio。独立 DSH 和 Studio 各用一组数据、书库及外部轻小说目录。启动恢复之前，运行时会先在本机可写目录取得 SQLite 写入锁。锁依赖文件系统提供可靠的字节锁。飞牛本地存储可通过 bind mount 接入。NFS、SMB 等网络挂载需单独验证其锁语义，优先把运行时状态放在本地卷。
+
+书库保留现有目录名。追加或更新 EPUB 时会比较来源、源站作品 ID、已知的 Bangumi 条目、语言、版本和完整分卷名。DSH 下载工具和 HTTP API 接受可选 `language` 和 `editionId`，仅在版本证据明确时填写。无法确认归属的同名目录、文件和索引会报冲突，需要先确认其来源再决定是否迁移。
+
+## SQLite 迁移预演
+
+准备停止写入后取得的一份数据快照，保留 `tasks/`，并将书库索引放在快照内的 `library/index.json`。快照和输出使用两个不同的目录，并在本机磁盘预留空间。
+
+```bash
+node scripts/migrate-novel-state.mjs /path/to/stopped-data-snapshot /path/to/new-migration-output
+```
+
+输出包含 `novel-state.sqlite` 和原样的 `json-backup/`。数据库使用事务、外键和索引。重复输入相同快照会识别已有结果。发现损坏记录、未完成入库或输入发生变化时保留已有输出并报错。快照保留每条 JSON 记录和已知的当前执行编号。线上读写仍沿用 JSON，预演库用于核对数据模型。漫画章节和阅读进度继续由现有服务维护。

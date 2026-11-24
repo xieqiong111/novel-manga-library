@@ -23,10 +23,11 @@ import { KomgaLibraryPage } from '@/pages/KomgaLibraryPage'
 import { useMangaLibrary } from '@/hooks/useMangaLibrary'
 import type { UnifiedLibraryItem } from '@/types/manga'
 import { PageHeader } from '@/components/common/PageHeader'
+import { PageControls } from '@/components/common/PageControls'
 import { CoverArt } from '@/components/novel/CoverArt'
 import { useToast } from '@/components/common/Toast'
 import { library as mockLibrary } from '@/data/mock'
-import { novelApi } from '@/services/novelApi'
+import { listLibraryPage, novelApi } from '@/services/novelApi'
 import { DEMO, IS_LIVE } from '@/services/runtime'
 import type { LibraryItem, LibraryStats } from '@/types'
 import { cn, formatBytes } from '@/services/utils'
@@ -85,26 +86,47 @@ function StudioLibraryPage({ providerTabs }: { providerTabs: ReactNode }) {
   const [filter, setFilter] = useState<'all' | Integrity>('all')
   const [sort, setSort] = useState<SortKey>('recent')
   const [items, setItems] = useState<LibraryItem[]>(IS_LIVE ? [] : mockLibrary)
+  const [offset, setOffset] = useState(0)
+  const [nextOffset, setNextOffset] = useState<number | null>(null)
+  const [total, setTotal] = useState(0)
+  const [revision, setRevision] = useState(0)
+  const [novelError, setNovelError] = useState<string | null>(null)
   const [stats, setStats] = useState<LibraryStats | null>(null)
   const [detail, setDetail] = useState<LibraryItem | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<LibraryItem | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
 
-  const refresh = async (query = keyword) => {
-    const [list, overview] = await Promise.all([novelApi.listLibrary(query), novelApi.getLibraryStats()])
-    setItems(list)
-    setStats(overview)
-  }
+  useEffect(() => {
+    if (type === 'manga') return
+    let active = true
+    const integrity = filter === 'all' ? undefined : { passed: 'ok', pending: 'unknown', failed: 'failed' }[filter]
+    const request = IS_LIVE ? listLibraryPage({ offset, query: keyword, sort, integrity })
+      : novelApi.listLibrary(keyword).then((items) => ({ items, total: items.length, nextOffset: null }))
+    void request.then((page) => {
+      if (!active) return
+      if (IS_LIVE && offset > 0 && offset >= page.total) {
+        setOffset(Math.max(0, Math.floor((page.total - 1) / 40) * 40))
+        return
+      }
+      setItems(page.items)
+      setTotal(page.total)
+      setNextOffset(page.nextOffset)
+      setNovelError(null)
+    }).catch((error: unknown) => {
+      if (active) setNovelError(error instanceof Error ? error.message : '读取轻小说书库失败')
+    })
+    return () => { active = false }
+  }, [keyword, type, offset, filter, sort, revision])
 
   useEffect(() => {
     if (type === 'manga') return
-    void refresh(keyword).catch(() => {
-      /* keep last known snapshot; the empty state explains a cold/empty library */
-    })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [keyword, type])
+    let active = true
+    void novelApi.getLibraryStats().then((overview) => { if (active) setStats(overview) }).catch(() => {})
+    return () => { active = false }
+  }, [type, revision])
 
   const visibleNovels = useMemo(() => {
+    if (IS_LIVE) return items
     const filtered = filter === 'all' ? items : items.filter((item) => item.integrity === filter)
     const sorted = [...filtered]
     if (sort === 'name') sorted.sort((a, b) => a.title.localeCompare(b.title, 'zh-Hans-CN'))
@@ -138,7 +160,7 @@ function StudioLibraryPage({ providerTabs }: { providerTabs: ReactNode }) {
       } else {
         toast({ tone: 'warning', title: '校验未通过', description: result.problems?.join('；') || '文件与清单不一致。' })
       }
-      void refresh().catch(() => {})
+      setRevision((value) => value + 1)
     } catch (error) {
       toast({ tone: 'warning', title: '校验失败', description: error instanceof Error ? error.message : '未知错误' })
     } finally {
@@ -166,7 +188,7 @@ function StudioLibraryPage({ providerTabs }: { providerTabs: ReactNode }) {
       setDeleteTarget(null)
       setDetail(null)
       toast({ tone: 'success', title: '已从书库移除', description: item.fileName })
-      void refresh().catch(() => {})
+      setRevision((value) => value + 1)
     } catch (error) {
       toast({ tone: 'warning', title: '删除失败', description: error instanceof Error ? error.message : '未知错误' })
     } finally {
@@ -231,7 +253,7 @@ function StudioLibraryPage({ providerTabs }: { providerTabs: ReactNode }) {
           <Search className="h-4 w-4 shrink-0 text-ink-muted" />
           <input
             value={keyword}
-            onChange={(event) => setKeyword(event.target.value)}
+            onChange={(event) => { setKeyword(event.target.value); setOffset(0) }}
             placeholder="搜索标题或文件名…"
             aria-label="搜索书库"
             className="h-full min-w-0 flex-1 bg-transparent text-[12px] text-ink placeholder:text-ink-muted focus:outline-none"
@@ -252,7 +274,7 @@ function StudioLibraryPage({ providerTabs }: { providerTabs: ReactNode }) {
                 key={id}
                 type="button"
                 aria-pressed={filter === id}
-                onClick={() => setFilter(id)}
+                onClick={() => { setFilter(id); setOffset(0) }}
                 className={cn(
                   'h-8 whitespace-nowrap rounded-full px-2.5 text-[11px] transition sm:px-3',
                   filter === id ? 'bg-accent-soft font-semibold text-accent' : 'text-ink-soft hover:text-accent',
@@ -267,7 +289,7 @@ function StudioLibraryPage({ providerTabs }: { providerTabs: ReactNode }) {
             <ArrowUpDown className="h-3 w-3 text-ink-muted" />
             <select
               value={type === 'manga' && sort === 'size' ? 'recent' : sort}
-              onChange={(event) => setSort(event.target.value as SortKey)}
+              onChange={(event) => { setSort(event.target.value as SortKey); setOffset(0) }}
               aria-label="排序方式"
               className="bg-transparent text-[10.5px] text-ink-soft focus:outline-none"
             >
@@ -280,6 +302,7 @@ function StudioLibraryPage({ providerTabs }: { providerTabs: ReactNode }) {
         </div>
       </Card>
 
+      {type !== 'manga' && novelError && <div className="mb-4"><MangaNotice message={novelError} /></div>}
       {mangaLibrary.error && (
         <div className="mb-4 flex flex-wrap items-center gap-2">
           <MangaNotice message={`漫画书架不可用 · ${mangaLibrary.error}`} />
@@ -295,7 +318,7 @@ function StudioLibraryPage({ providerTabs }: { providerTabs: ReactNode }) {
             title="书库中暂无匹配资源"
             description="可以调整筛选条件，或在搜索发现中选择作品。"
             action={
-              <Button variant="soft" size="sm" onClick={() => { setKeyword(''); setFilter('all') }}>
+              <Button variant="soft" size="sm" onClick={() => { setKeyword(''); setFilter('all'); setOffset(0) }}>
                 清空筛选
               </Button>
             }
@@ -433,6 +456,9 @@ function StudioLibraryPage({ providerTabs }: { providerTabs: ReactNode }) {
 
       {mangaLibrary.hasMore && <Button size="sm" className="mt-4" loading={mangaLibrary.loading} onClick={mangaLibrary.loadMore}>加载更多漫画</Button>}
 
+      {IS_LIVE && type !== 'manga' && <PageControls label="轻小说书库" offset={offset}
+        total={total} nextOffset={nextOffset} onChange={setOffset} />}
+
       <Modal
         open={Boolean(detail)}
         onClose={() => setDetail(null)}
@@ -465,7 +491,7 @@ function StudioLibraryPage({ providerTabs }: { providerTabs: ReactNode }) {
                 ['文件 ID', detail.id],
                 ['大小', detail.size],
                 ['完整性', integrityMeta[detail.integrity].label],
-                ['来源任务', `task_${detail.id.replace('lib_', '')}`],
+                ['来源任务', detail.taskId ?? '—'],
               ].map(([label, value]) => (
                 <div key={label} className="flex items-center justify-between gap-3">
                   <span className="text-ink-muted">{label}</span>

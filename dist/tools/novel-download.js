@@ -33,6 +33,8 @@ export function registerNovelDownload(ctx, runtime) {
             sourceTitle: { type: 'string', description: 'Exact title returned by the source for an unlisted alias. Use only with bangumiSubjectId after checking that both entries refer to the same work. Folder naming still comes from Bangumi.' },
             url: { type: 'string', description: 'Canonical detail page URL on an enabled public source. Provide this or bookId.' },
             source: { type: 'string', description: 'Optional source id hint (bilinovel / wenku8 / fixture).' },
+            language: { type: 'string', description: 'Known language tag, such as zh-Hans or ja.' },
+            editionId: { type: 'string', description: 'Stable translation or edition identifier when explicitly known.' },
             volumes: {
                 type: 'string',
                 description: 'Volume selector: "all" (default), 1-based indices like "1,2,5", or comma-separated exact volume names.',
@@ -103,6 +105,8 @@ export function registerNovelDownload(ctx, runtime) {
                     sourceId: book.sourceId,
                     source: book.source,
                     sourceUrl: book.sourceUrl,
+                    language: args.language,
+                    editionId: args.editionId,
                     title: book.title,
                     author: book.author,
                     volumes: selector,
